@@ -13,10 +13,9 @@ export async function connectDB() {
   }
   client = new MongoClient(uri, {});
   await client.connect();
-  db = client.db(); // uses the DB name encoded in the connection string, or "test"
+  db = client.db();
   logger.info('MongoDB connected');
 
-  // Recommended indexes
   try {
     await db.collection('conversations').createIndex({ lastActive: -1 });
     await db.collection('whatsapp_sessions').createIndex({ key: 1 }, { unique: true });
@@ -27,7 +26,6 @@ export async function connectDB() {
   return db;
 }
 
-// Central accessor for collections
 export function getDb() {
   if (!db) throw new Error('DB not initialized. Call connectDB() first.');
   return db;
@@ -37,15 +35,42 @@ export function col(name) {
   return getDb().collection(name);
 }
 
-// ---------------------------------------------------------------------------
-// Settings: a single document { _id: "settings", ... } holding runtime config.
-// ---------------------------------------------------------------------------
 export const SETTINGS_ID = 'settings';
+
+export const MODEL_LISTS = {
+  groq: [
+    'llama-3.3-70b-versatile',
+    'llama-3.1-8b-instant',
+    'llama-3.2-90b-vision-preview',
+    'llama-3.2-11b-vision-preview',
+    'mixtral-8x7b-32768',
+    'gemma2-9b-it',
+  ],
+  gemini: [
+    'gemini-2.0-flash',
+    'gemini-2.0-flash-lite',
+    'gemini-1.5-flash',
+    'gemini-1.5-pro',
+    'gemini-2.0-flash-thinking-exp-01-21',
+  ],
+  openrouter: [
+    'openai/gpt-4o-mini',
+    'openai/gpt-4o',
+    'meta-llama/llama-3.3-70b-instruct',
+    'anthropic/claude-3.5-sonnet',
+    'google/gemini-2.0-flash-001',
+    'qwen/qwen-2.5-72b-instruct',
+    'deepseek/deepseek-chat',
+  ],
+};
 
 export const DEFAULT_SETTINGS = {
   businessName: 'Our Store',
+  shopAddress: '',
+  shopWebsite: '',
+  shopLocation: '',
   productApiUrl: '',
-  productApiCreateUrl: '', // optional POST endpoint for writes; empty => use Mongo collection
+  productApiCreateUrl: '',
   aiProvider: process.env.AI_PROVIDER || 'groq',
   groqApiKey: '',
   groqModel: 'llama-3.3-70b-versatile',
@@ -55,15 +80,15 @@ export const DEFAULT_SETTINGS = {
   geminiApiKey: '',
   geminiModel: 'gemini-2.0-flash',
   ownerWhatsappNumber: '',
-  adminNumbers: '', // comma-separated; first defaults to owner number
+  adminNumbers: '',
   broadcastWindowDays: 45,
+  ownerTraining: '',
 };
 
 export async function getSettings() {
   const c = col('settings');
   const doc = await c.findOne({ _id: SETTINGS_ID });
   if (!doc) return { ...DEFAULT_SETTINGS };
-  // merge with defaults so newly-added keys always exist
   return { ...DEFAULT_SETTINGS, ...doc };
 }
 
@@ -77,4 +102,4 @@ export async function saveSettings(patch) {
   return getSettings();
 }
 
-export default { connectDB, getDb, col, getSettings, saveSettings };
+export default { connectDB, getDb, col, getSettings, saveSettings, DEFAULT_SETTINGS, MODEL_LISTS };
