@@ -1,77 +1,88 @@
 // authState.js — Mongo-backed Baileys AuthenticationState.
-// Baileys expects an object with { creds, keys } where each has an async get()
-// returning the current value and set() persisting a new value. We store the
-// whole session as serialized JSON under a single "whatsapp_sessions" document
-// so it survives Railway's ephemeral filesystem across redeploys.
+// Uses Baileys' own initAuthCreds() + BufferJSON serialization so a fresh
+// session starts from valid credentials (avoids 'error in validating
+// connection' loops). Session survives Railway redeploys via MongoDB.
 import { col } from './db.js';
+import { initAuthCreds, BufferJSON } from '@whiskeysockets/baileys';
 import pino from 'pino';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
 const SESSION_ID = 'default';
 
-// The on-disk (Mongo) representation of a Baileys auth state.
-const emptyState = {
-  creds: { signedIdentityKey: null, registrationId: 0, advSecretKey: null, nextPrekeyId: 1, firstUnuploadedPrekeyId: 1, account: null, me: null, signalIdentities: [] },
-  keys: {},
-};
+let creds = null;
+let keys = {};
 
-let cachedState = null;
+function toJSON(obj) {
+  return JSON.parse(JSON.stringify(obj, (k, v) => {
+    if (v && typeof v === 'object') {
+      if (Buffer.isBuffer(v)) return { type: 'Buffer', data: v.toString('base64') };
+      if (v.type === 'Buffer' && v.data) {
+        let b = Buffer.from(v.data, 'base64');
+        if (v.subType) b = Uint8Array.from(b);
+        return BufferJSON.replacer(k, { type: v.type, data: b.toString('base64') });
+      }
+      return v;
+    }
+    return v;
+  }));
+}
 
 async function loadState() {
-  if (cachedState) return cachedState;
   const doc = await col('whatsapp_sessions').findOne({ _id: SESSION_ID });
-  cachedState = doc ? doc.state : { ...emptyState };
-  return cachedState;
+  if (doc && doc.creds && doc.keys) {
+    creds = doc.creds;
+    keys = doc.keys;
+    logger.info('loaded existing WhatsApp session from Mongo');
+  } else {
+    creds = initAuthCreds();
+    keys = {};
+    logger.info('no saved session — initialized fresh credentials (new QR)');
+  }
 }
 
 async function persistState() {
-  if (!cachedState) return;
   await col('whatsapp_sessions').updateOne(
     { _id: SESSION_ID },
-    { $set: { state: cachedState, updatedAt: new Date() } },
+    { $set: { creds, keys, updatedAt: new Date() } },
     { upsert: true }
   );
 }
 
 export function hasSession() {
-  return cachedState && cachedState.creds && cachedState.creds.me;
+  return creds && creds.me;
 }
 
 export async function clearSession() {
-  cachedState = { ...emptyState };
+  creds = initAuthCreds();
+  keys = {};
   await col('whatsapp_sessions').deleteOne({ _id: SESSION_ID });
   logger.warn('session cleared from Mongo');
-}
-
-// Small debounced persister to avoid writing on every single key update.
-let saveTimer = null;
-function scheduleSave() {
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => { saveTimer = null; persistState().catch((e) => logger.error({ err: e.message }, 'save session failed')); }, 300);
-}
-
-function makeStore(getter, setter) {
-  return {
-    async get() { const st = await loadState(); return getter(st); },
-    set(value) { setter(cachedState || (cachedState = { ...emptyState }), value); scheduleSave(); },
-  };
 }
 
 export async function useMongoAuthState() {
   await loadState();
   return {
     state: {
-      creds: makeStore((st) => st.creds, (st, v) => { st.creds = v; }),
-      keys: makeStore((st) => st.keys, (st, v) => { st.keys = v; }),
+      creds: {
+        get: () => creds,
+        set: (v) => { creds = v; },
+      },
+      keys: {
+        get: (type, ids) => {
+          const key = `${type}_${ids.join('_')}`;
+          return keys[key];
+        },
+        set: (data) => {
+          for (const [k, v] of Object.entries(data)) keys[k] = v;
+        },
+      },
     },
     saveCreds: async () => { await persistState(); },
   };
 }
 
-// Flush any pending writes (call before shutdown).
 export async function flushAuthState() {
-  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
   await persistState();
 }
 
