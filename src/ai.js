@@ -13,6 +13,16 @@ export function hasAnyModel(cfg) {
   return Boolean(cfg && cfg.apiKey && cfg.model);
 }
 
+// Clean thinking blocks like <think>...</think> from the output to prevent
+// displaying internal chain-of-thought to customers.
+function cleanOutput(text) {
+  if (!text) return '';
+  return text
+    .replace(/<think>[\s\S]*?<\/think>/gi, '') // strip <think>...</think>
+    .replace(/^<think>[\s\S]*$/gi, '')         // strip unclosed <think>...
+    .trim();
+}
+
 async function withKeyFallback(cfg, fn) {
   const keys = cfg && cfg.apiKeys && cfg.apiKeys.length ? cfg.apiKeys : (cfg && cfg.apiKey ? [cfg.apiKey] : []);
   let lastErr = null;
@@ -48,7 +58,7 @@ async function openAiCompatChat(cfg, messages, { endpoint, temperature = 0.7, ma
   const data = await res.json();
   const content = data?.choices?.[0]?.message?.content;
   if (!content) throw new Error('empty response from provider');
-  return content.trim();
+  return cleanOutput(content);
 }
 
 async function groqChat(cfg, messages, opts) {
@@ -91,7 +101,7 @@ async function geminiChat(cfg, messages) {
   const result = await chat.sendMessage(last.parts[0].text);
   const text = result.response.text();
   if (!text) throw new Error('empty response from Gemini');
-  return text.trim();
+  return cleanOutput(text);
 }
 
 export async function getAIReply(messages, cfg) {
@@ -172,7 +182,7 @@ export async function describeImage(imageDataUrl, instruction, cfg) {
           { inlineData: { data: base64, mimeType: mime } },
           { text: instruction },
         ]);
-        return result.response.text().trim();
+        return cleanOutput(result.response.text());
       }
       const visionModel = c.visionModel || c.model;
       const endpoint = c.provider === 'openrouter'
@@ -198,7 +208,7 @@ export async function describeImage(imageDataUrl, instruction, cfg) {
       });
       if (!res.ok) throw new Error('vision provider ' + res.status);
       const data = await res.json();
-      return (data?.choices?.[0]?.message?.content || '').trim();
+      return cleanOutput(data?.choices?.[0]?.message?.content || '');
     });
   } catch (e) {
     logger.error({ err: e.message }, 'describeImage failed');
