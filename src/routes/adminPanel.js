@@ -1,6 +1,6 @@
 // adminPanel.js — single protected page: password login, then QR + phone-number
 // pairing, plus settings. QR auto-refreshes via client-side polling (no page
-// reload). AI provider section is dynamic (multiple keys with fallback).
+// reload). AI Provider section uses an Add-button flow with a providers list.
 import express from 'express';
 import qrcode from 'qrcode';
 import { getSettings, saveSettings, MODEL_LISTS } from '../db.js';
@@ -65,6 +65,15 @@ function baseHtml(body, extraScript = '') {
  .hint{font-size:12px;color:#6b7280;margin-top:4px;}
  .hidden{display:none;}
  .paircode{font-size:40px;letter-spacing:8px;font-weight:700;color:#4ade80;margin:12px 0;}
+ .addbtn{display:inline-block;background:#16a34a;color:#fff;border:0;padding:10px 18px;border-radius:8px;font-size:14px;cursor:pointer;margin:4px 4px 0 0;}
+ .addbtn:hover{background:#15803d;}
+ .provrow{display:flex;align-items:center;justify-content:space-between;background:#13161c;border:1px solid #2a2e37;border-radius:8px;padding:10px 12px;margin:8px 0;}
+ .provname{font-weight:600;font-size:14px;}
+ .provmeta{font-size:12px;color:#9aa0aa;margin-top:2px;}
+ .active{background:#12311f;color:#4ade80;padding:3px 9px;border-radius:12px;font-size:11px;margin-left:8px;}
+ .remove{background:transparent;border:1px solid #dc2626;color:#dc2626;padding:5px 12px;border-radius:6px;font-size:12px;cursor:pointer;}
+ .remove:hover{background:#dc2626;color:#fff;}
+ .use{background:#2563eb;color:#fff;border:0;padding:5px 12px;border-radius:6px;font-size:12px;cursor:pointer;margin-right:6px;}
 </style></head><body><div class="wrap">${body}</div>
 ${extraScript}
 </body></html>`;
@@ -86,7 +95,6 @@ ${err ? `<div class="err">${err}</div>` : ''}
 
 async function panelPage(settings, qrState, saved) {
   const value = (k) => esc(settings[k] ?? '');
-  const selected = (k, v) => ((settings[k] ?? 'groq') === v ? 'selected' : '');
 
   const qrSection = `<div class="card"><h2>📱 WhatsApp connect karo</h2>
 <div id="qrStatus">
@@ -106,11 +114,33 @@ ${qrState.connected && qrState.me
 
   const mo = (list, current) => selectOptions(list, current);
 
+  const providers = [
+    { key: 'groq', name: 'Groq', apiKey: settings.groqApiKey || '', model: settings.groqModel || '' },
+    { key: 'gemini', name: 'Gemini', apiKey: settings.geminiApiKey || '', model: settings.geminiModel || '' },
+    { key: 'openrouter', name: 'OpenRouter', apiKey: settings.openrouterApiKey || '', model: settings.openrouterModel || '' },
+  ];
+  const activeProvider = settings.aiProvider || 'groq';
+
+  let provRows = '';
+  for (const p of providers) {
+    const keyCount = p.apiKey ? p.apiKey.split('\n').filter(Boolean).length : 0;
+    const isActive = p.key === activeProvider;
+    const meta = keyCount > 0 ? `${keyCount} key(s) • ${esc(p.model)}` : 'No key added';
+    provRows += `<div class="provrow" data-provider="${p.key}">
+<div><span class="provname">${p.name}${isActive ? '<span class="active">Active</span>' : ''}</span>
+<div class="provmeta">${meta}</div></div>
+<div>
+${isActive ? '' : `<button type="button" class="use" data-activate="${p.key}">Use as active</button>`}
+<button type="button" class="remove" data-remove="${p.key}">Remove</button>
+</div></div>`;
+  }
+
   return baseHtml(`
 <h1>🤖 WhatsApp Sales Bot</h1>
 <p class="sub">QR ya phone number se connect karo (upar) + settings (neeche).</p>
 ${qrSection}
-<form method="POST" action="/">
+<form method="POST" action="/" id="settingsForm">
+<input type="hidden" name="aiProvider" id="aiProviderHidden" value="${esc(activeProvider)}">
 <div class="card"><h2>🏪 Business</h2>
 <label>Shop / business name</label><input name="businessName" value="${value('businessName')}">
 <label>Shop address</label><input name="shopAddress" value="${value('shopAddress')}" placeholder="Full address">
@@ -127,33 +157,34 @@ ${qrSection}
 <label>Product API create URL (optional)</label><input name="productApiCreateUrl" value="${value('productApiCreateUrl')}" placeholder="leave blank to store in DB">
 </div>
 <div class="card"><h2>🤖 AI Provider</h2>
+<div id="providerList">${provRows || '<p style="color:#6b7280;">Koi provider add nahi hai.</p>'}</div>
+<button type="button" class="addbtn" id="addProviderBtn">➕ Add Provider</button>
+<div id="addProviderForm" class="hidden" style="margin-top:14px;padding-top:14px;border-top:1px solid #2a2e37;">
 <label>Provider select karo</label>
-<select name="aiProvider" id="aiProvider">
-<option value="groq" ${selected('aiProvider','groq')}>Groq (default)</option>
-<option value="gemini" ${selected('aiProvider','gemini')}>Gemini</option>
-<option value="openrouter" ${selected('aiProvider','openrouter')}>OpenRouter</option>
+<select id="addProviderSelect">
+<option value="groq">Groq</option>
+<option value="gemini">Gemini</option>
+<option value="openrouter">OpenRouter</option>
 </select>
-
-<div id="sec-groq" class="provsec ${settings.aiProvider === 'gemini' || settings.aiProvider === 'openrouter' ? 'hidden' : ''}">
-<label>Groq API keys (ek key per line — multiple keys = auto fallback)</label>
-<textarea name="groqApiKey" rows="3" placeholder="gsk_...">${value('groqApiKey')}</textarea>
-<label>Groq model</label><select name="groqModel">${mo(MODEL_LISTS.groq, settings.groqModel)}</select>
-<label>Groq vision model</label><select name="groqVisionModel">${mo(MODEL_LISTS.groq, settings.groqVisionModel)}</select>
+<div id="addOpenrouterFields">
+<label>OpenRouter API key</label>
+<input type="text" id="addOpenrouterKey" placeholder="sk-or-...">
+<label>Model (free model use karo)</label>
+<select id="addOpenrouterModel">${mo(MODEL_LISTS.openrouter, settings.openrouterModel)}</select>
 </div>
-
-<div id="sec-gemini" class="provsec ${settings.aiProvider !== 'gemini' ? 'hidden' : ''}">
-<label>Gemini API keys (ek key per line — multiple keys = auto fallback)</label>
-<textarea name="geminiApiKey" rows="3" placeholder="AIza...">${value('geminiApiKey')}</textarea>
-<label>Gemini model</label><select name="geminiModel">${mo(MODEL_LISTS.gemini, settings.geminiModel)}</select>
+<div id="addGroqFields" class="hidden">
+<label>Groq API key</label>
+<input type="text" id="addGroqKey" placeholder="gsk_...">
+<label>Groq model</label><select id="addGroqModel">${mo(MODEL_LISTS.groq, settings.groqModel)}</select>
 </div>
-
-<div id="sec-openrouter" class="provsec ${settings.aiProvider !== 'openrouter' ? 'hidden' : ''}">
-<label>OpenRouter API keys (ek key per line — multiple keys = auto fallback)</label>
-<textarea name="openrouterApiKey" rows="3" placeholder="sk-or-...">${value('openrouterApiKey')}</textarea>
-<label>OpenRouter model</label><select name="openrouterModel">${mo(MODEL_LISTS.openrouter, settings.openrouterModel)}</select>
+<div id="addGeminiFields" class="hidden">
+<label>Gemini API key</label>
+<input type="text" id="addGeminiKey" placeholder="AIza...">
+<label>Gemini model</label><select id="addGeminiModel">${mo(MODEL_LISTS.gemini, settings.geminiModel)}</select>
 </div>
-
-<div class="hint">💡 Ek provider select karo, uski keys daalo (jitni chahiye, ek line mein ek). Ek key fail/rate-limit ho jaye to next key automatically use hoti hai (fallback).</div>
+<button type="button" id="saveProviderBtn" style="background:#16a34a;">💾 Save Provider</button>
+<div class="hint" style="margin-top:8px;">💡 Ek hi provider mein multiple keys ek line mein bhi daal sakte ho (newline se alag). Ek key fail/rate-limit ho to next key automatically use hoti hai (fallback).</div>
+</div>
 </div>
 <div class="card"><h2>🔔 Notifications (optional)</h2>
 <label>Notify webhook URL</label><input name="notifyWebhookUrl" value="${value('notifyWebhookUrl')}" placeholder="https://yourserver.com/hook">
@@ -170,16 +201,6 @@ ${qrSection}
 <form method="POST" action="/logout"><button type="submit" style="background:#dc2626;">Logout</button></form>`,
 `<script>
 (function(){
-  var sel = document.getElementById('aiProvider');
-  function update(){
-    var v = sel ? sel.value : 'groq';
-    ['groq','gemini','openrouter'].forEach(function(p){
-      var sec = document.getElementById('sec-'+p);
-      if (sec) sec.classList.toggle('hidden', p !== v);
-    });
-  }
-  if (sel) { sel.addEventListener('change', update); update(); }
-
   var pairBtn = document.getElementById('pairBtn');
   var pairPhone = document.getElementById('pairPhone');
   var pairResult = document.getElementById('pairResult');
@@ -228,6 +249,75 @@ ${qrSection}
   }
   pollQr();
   setInterval(pollQr, 4000);
+
+  var addProviderBtn = document.getElementById('addProviderBtn');
+  var addProviderForm = document.getElementById('addProviderForm');
+  var addProviderSelect = document.getElementById('addProviderSelect');
+  function syncProviderFields(){
+    var v = addProviderSelect.value;
+    var gp = document.getElementById('addGroqFields');
+    var gm = document.getElementById('addGeminiFields');
+    var or = document.getElementById('addOpenrouterFields');
+    if (gp) gp.classList.toggle('hidden', v !== 'groq');
+    if (gm) gm.classList.toggle('hidden', v !== 'gemini');
+    if (or) or.classList.toggle('hidden', v !== 'openrouter');
+  }
+  if (addProviderBtn && addProviderForm) {
+    addProviderBtn.addEventListener('click', function(){ addProviderForm.classList.toggle('hidden'); });
+  }
+  if (addProviderSelect) {
+    addProviderSelect.addEventListener('change', syncProviderFields);
+    syncProviderFields();
+  }
+
+  function postProvider(payload){
+    return fetch('/providers', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    }).then(function(r){ return r.json(); });
+  }
+  function reloadPage(){ window.location.reload(); }
+
+  var saveProviderBtn = document.getElementById('saveProviderBtn');
+  if (saveProviderBtn) {
+    saveProviderBtn.addEventListener('click', function(){
+      var v = addProviderSelect.value;
+      var payload = { provider: v };
+      if (v === 'groq') {
+        payload.apiKey = document.getElementById('addGroqKey').value;
+        payload.model = document.getElementById('addGroqModel').value;
+      } else if (v === 'gemini') {
+        payload.apiKey = document.getElementById('addGeminiKey').value;
+        payload.model = document.getElementById('addGeminiModel').value;
+      } else {
+        payload.apiKey = document.getElementById('addOpenrouterKey').value;
+        payload.model = document.getElementById('addOpenrouterModel').value;
+      }
+      saveProviderBtn.disabled = true;
+      saveProviderBtn.textContent = 'Saving...';
+      postProvider(payload).then(function(d){
+        if (d.ok) { reloadPage(); }
+        else { alert(d.error || 'Error hua'); saveProviderBtn.disabled = false; saveProviderBtn.textContent = '💾 Save Provider'; }
+      }).catch(function(){ reloadPage(); });
+    });
+  }
+
+  document.addEventListener('click', function(e){
+    var t = e.target;
+    if (t && t.getAttribute && t.getAttribute('data-activate')) {
+      postProvider({ provider: t.getAttribute('data-activate'), activateOnly: true }).then(function(d){
+        if (d.ok) reloadPage(); else alert(d.error || 'Error');
+      });
+    }
+    if (t && t.getAttribute && t.getAttribute('data-remove')) {
+      if (confirm('Provider remove kare?')) {
+        postProvider({ provider: t.getAttribute('data-remove'), remove: true }).then(function(d){
+          if (d.ok) reloadPage(); else alert(d.error || 'Error');
+        });
+      }
+    }
+  });
 })();
 </script>`);
 }
@@ -259,6 +349,55 @@ export function makeAdminPanelRouter(getQrState) {
     const settings = await saveSettings(patch);
     const qrState = getQrState ? getQrState() : {};
     res.send(await panelPage(settings, qrState, true));
+  });
+
+  router.post('/providers', async (req, res) => {
+    if (!isAuthed(req)) return res.status(401).json({ ok: false, error: 'Not authorized' });
+    try {
+      const provider = String(req.body.provider || '');
+      const valid = ['groq', 'gemini', 'openrouter'];
+      if (!valid.includes(provider)) return res.json({ ok: false, error: 'Invalid provider' });
+
+      if (req.body.activateOnly) {
+        await saveSettings({ aiProvider: provider });
+        return res.json({ ok: true });
+      }
+
+      if (req.body.remove) {
+        const patch = {};
+        if (provider === 'groq') patch.groqApiKey = '';
+        else if (provider === 'gemini') patch.geminiApiKey = '';
+        else patch.openrouterApiKey = '';
+        const s = await getSettings();
+        if (s.aiProvider === provider) {
+          const alt = valid.find((p) => p !== provider && (s[p === 'groq' ? 'groqApiKey' : p === 'gemini' ? 'geminiApiKey' : 'openrouterApiKey'] || '').trim());
+          patch.aiProvider = alt || 'groq';
+        }
+        await saveSettings(patch);
+        return res.json({ ok: true });
+      }
+
+      const apiKey = String(req.body.apiKey || '').trim();
+      const model = String(req.body.model || '').trim();
+      if (!apiKey) return res.json({ ok: false, error: 'API key required' });
+
+      const patch = { aiProvider: provider };
+      if (provider === 'groq') {
+        patch.groqApiKey = apiKey;
+        if (model) patch.groqModel = model;
+        if (model) patch.groqVisionModel = model;
+      } else if (provider === 'gemini') {
+        patch.geminiApiKey = apiKey;
+        if (model) patch.geminiModel = model;
+      } else {
+        patch.openrouterApiKey = apiKey;
+        if (model) patch.openrouterModel = model;
+      }
+      await saveSettings(patch);
+      return res.json({ ok: true });
+    } catch (e) {
+      return res.json({ ok: false, error: e.message });
+    }
   });
 
   router.post('/logout', (req, res) => {
