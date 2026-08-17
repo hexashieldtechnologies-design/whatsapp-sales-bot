@@ -1,17 +1,19 @@
 // adminPanel.js — single protected page: password login, then QR (top) +
-// settings (bottom) together. Password defaults to 'dev'.
+// settings (bottom) together. Password defaults to 'dev'. Model fields are
+// dropdowns so the owner never has to type model names.
 import express from 'express';
 import qrcode from 'qrcode';
-import { getSettings, saveSettings } from '../db.js';
+import { getSettings, saveSettings, MODEL_LISTS } from '../db.js';
 
 const router = express.Router();
 
 const COOKIE_NAME = 'wa_admin';
 const FIELD_NAMES = [
-  'businessName', 'productApiUrl', 'productApiCreateUrl', 'aiProvider',
+  'businessName', 'shopAddress', 'shopWebsite', 'shopLocation',
+  'productApiUrl', 'productApiCreateUrl', 'aiProvider',
   'groqApiKey', 'groqModel', 'groqVisionModel',
   'openrouterApiKey', 'openrouterModel', 'geminiApiKey', 'geminiModel',
-  'ownerWhatsappNumber', 'adminNumbers', 'broadcastWindowDays',
+  'ownerWhatsappNumber', 'adminNumbers', 'broadcastWindowDays', 'ownerTraining',
 ];
 
 function getPassword() {
@@ -28,6 +30,16 @@ function isAuthed(req) {
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+function selectOptions(list, current) {
+  let opts = '';
+  const has = list.includes(current);
+  if (current && !has) opts += `<option value="${esc(current)}" selected>${esc(current)} (current)</option>`;
+  for (const m of list) {
+    opts += `<option value="${esc(m)}" ${m === current ? 'selected' : ''}>${esc(m)}</option>`;
+  }
+  return opts;
+}
+
 function baseHtml(body) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Bot Admin</title>
@@ -38,7 +50,8 @@ function baseHtml(body) {
  .card{background:#1a1d24;border:1px solid #2a2e37;border-radius:12px;padding:20px;margin-bottom:20px;}
  .card h2{font-size:16px;margin:0 0 14px;color:#e6e6e6;}
  label{display:block;font-size:13px;color:#aab0ba;margin:12px 0 4px;}
- input,select{width:100%;box-sizing:border-box;padding:10px 11px;border-radius:7px;border:1px solid #333845;background:#13161c;color:#e6e6e6;font-size:14px;}
+ input,select,textarea{width:100%;box-sizing:border-box;padding:10px 11px;border-radius:7px;border:1px solid #333845;background:#13161c;color:#e6e6e6;font-size:14px;}
+ textarea{min-height:80px;resize:vertical;font-family:inherit;}
  button{background:#2563eb;color:#fff;border:0;padding:11px 22px;border-radius:8px;font-size:15px;cursor:pointer;margin-top:8px;}
  button:hover{background:#1d4ed8;}
  .center{text-align:center;}
@@ -48,6 +61,7 @@ function baseHtml(body) {
  .ok{background:#123b24;color:#4ade80;} .wait{background:#3b2f12;color:#fbbf24;}
  .err{color:#f87171;background:#3b1220;padding:10px 14px;border-radius:8px;margin-bottom:14px;}
  .note{background:#142a3b;color:#7dd3fc;padding:10px 14px;border-radius:8px;font-size:13px;margin-top:12px;}
+ .hint{font-size:12px;color:#6b7280;margin-top:4px;}
 </style></head><body><div class="wrap">${body}</div></body></html>`;
 }
 
@@ -90,33 +104,50 @@ ${img ? `<img src="${img}" alt="QR">` : '<p>QR loading…</p>'}
 
   const savedNote = saved ? '<div style="background:#e6f4ea;color:#14532d;padding:10px 14px;border-radius:8px;margin-bottom:16px;">✅ Saved. Settings live ho gaye.</div>' : '';
 
+  const mo = (list, current) => selectOptions(list, current);
+
   return baseHtml(`
 <h1>🤖 WhatsApp Sales Bot</h1>
 <p class="sub">QR scan karo (upar) + settings (neeche) — sab ek hi page par.</p>
 ${qrSection}
 <form method="POST" action="/">
-<div class="card"><h2>⚙️ Settings</h2>${savedNote}
+<div class="card"><h2>🏪 Business</h2>
 <label>Shop / business name</label><input name="businessName" value="${value('businessName')}">
-<label>Owner WhatsApp number (escalation)</label><input name="ownerWhatsappNumber" value="${value('ownerWhatsappNumber')}" placeholder="91XXXXXXXXXX">
+<label>Shop address</label><input name="shopAddress" value="${value('shopAddress')}" placeholder="Full address">
+<label>Shop location / area</label><input name="shopLocation" value="${value('shopLocation')}" placeholder="e.g. Andheri, Mumbai">
+<label>Website URL (agar hai)</label><input name="shopWebsite" value="${value('shopWebsite')}" placeholder="https://yourshop.com">
+<label>Owner WhatsApp number (escalation + admin)</label><input name="ownerWhatsappNumber" value="${value('ownerWhatsappNumber')}" placeholder="91XXXXXXXXXX">
 <label>Admin numbers (comma-separated)</label><input name="adminNumbers" value="${value('adminNumbers')}" placeholder="91XXXXXXXXXX,91YYYYYYYYYY">
+</div>
+<div class="card"><h2>📦 Product catalog</h2>
 <label>Product API URL (GET → JSON array)</label><input name="productApiUrl" value="${value('productApiUrl')}" placeholder="https://yourapi.com/products">
 <label>Product API create URL (optional)</label><input name="productApiCreateUrl" value="${value('productApiCreateUrl')}" placeholder="leave blank to store in DB">
-<label>AI Provider</label>
+</div>
+<div class="card"><h2>🤖 AI Provider</h2>
+<label>Provider</label>
 <select name="aiProvider">
 <option value="groq" ${selected('aiProvider','groq')}>Groq (default)</option>
 <option value="gemini" ${selected('aiProvider','gemini')}>Gemini</option>
 <option value="openrouter" ${selected('aiProvider','openrouter')}>OpenRouter</option>
 </select>
-<label>Groq API key</label><input name="groqApiKey" value="${value('groqApiKey')}">
-<label>Groq model</label><input name="groqModel" value="${value('groqModel')}">
-<label>Groq vision model</label><input name="groqVisionModel" value="${value('groqVisionModel')}">
-<label>Gemini API key</label><input name="geminiApiKey" value="${value('geminiApiKey')}">
-<label>Gemini model</label><input name="geminiModel" value="${value('geminiModel')}">
-<label>OpenRouter API key</label><input name="openrouterApiKey" value="${value('openrouterApiKey')}">
-<label>OpenRouter model</label><input name="openrouterModel" value="${value('openrouterModel')}">
-<label>Broadcast window (days)</label><input name="broadcastWindowDays" type="number" value="${value('broadcastWindowDays')}">
-<button type="submit">Save settings</button>
+<label>Groq API key</label><input name="groqApiKey" value="${value('groqApiKey')}" placeholder="gsk_...">
+<label>Groq model</label><select name="groqModel">${mo(MODEL_LISTS.groq, settings.groqModel)}</select>
+<label>Groq vision model</label><select name="groqVisionModel">${mo(MODEL_LISTS.groq, settings.groqVisionModel)}</select>
+<label>Gemini API key</label><input name="geminiApiKey" value="${value('geminiApiKey')}" placeholder="AIza...">
+<label>Gemini model</label><select name="geminiModel">${mo(MODEL_LISTS.gemini, settings.geminiModel)}</select>
+<label>OpenRouter API key</label><input name="openrouterApiKey" value="${value('openrouterApiKey')}" placeholder="sk-or-...">
+<label>OpenRouter model</label><select name="openrouterModel">${mo(MODEL_LISTS.openrouter, settings.openrouterModel)}</select>
+<div class="hint">💡 Model dropdown se select karo — manually type karne ki zaroorat nahi.</div>
 </div>
+<div class="card"><h2>🎓 Owner Training (optional)</h2>
+<label>Apne bot ko kya sikhana hai? (greeting style, pricing rules, offers, etc.)</label>
+<textarea name="ownerTraining" placeholder="Bot ko ye batao ki kaise baat karni hai...">${value('ownerTraining')}</textarea>
+<div class="hint">Ye instructions har customer conversation mein bot follow karega.</div>
+</div>
+<div class="card"><h2>📣 Broadcast</h2>
+<label>Broadcast window (days)</label><input name="broadcastWindowDays" type="number" value="${value('broadcastWindowDays')}">
+</div>
+<button type="submit">Save settings</button>
 </form>
 <form method="POST" action="/logout"><button type="submit" style="background:#dc2626;">Logout</button></form>`);
 }
