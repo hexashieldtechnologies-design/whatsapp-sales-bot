@@ -8,14 +8,8 @@ import pino from 'pino';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
-function blockedSet(settings) {
-  return new Set(
-    (settings.blockedNumbers || '')
-      .split(',')
-      .map((x) => x.trim())
-      .filter(Boolean)
-      .map(normalizeNumber)
-  );
+function numSet(csv) {
+  return new Set(String(csv || '').split(',').map((x) => x.trim()).filter(Boolean).map(normalizeNumber));
 }
 
 async function notifyWebhook(settings, payload) {
@@ -59,8 +53,13 @@ export async function handleInbound(sock, message, settings) {
     return;
   }
 
-  if (blockedSet(settings).has(senderNumber)) {
+  if (numSet(settings.blockedNumbers).has(senderNumber)) {
     logger.info('blocked number %s — ignoring', senderNumber);
+    return;
+  }
+
+  if (numSet(settings.pausedNumbers).has(senderNumber)) {
+    logger.info('customer %s is paused — ignoring (use .start <number> to resume)', senderNumber);
     return;
   }
 
