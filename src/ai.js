@@ -3,8 +3,7 @@ import pino from 'pino';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
-const FALLBACK_REPLY =
-  'Ek second, thoda technical issue aa raha hai. Main abhi dobara try karta hoon, aap bas thoda ruk jaiye. 🙏';
+const FALLBACK_REPLY = 'Ek second, thoda technical issue aa raha hai. Main abhi dobara try karta hoon, aap bas thoda ruk jaiye. 🙏';
 
 function toList(v) {
   if (Array.isArray(v)) return v.map((x) => String(x).trim()).filter(Boolean);
@@ -58,14 +57,13 @@ async function callProviderChat(provider, apiKey, model, messages) {
 
 function buildChain(cfg) {
   const chain = [];
-  const order = cfg.provider
-    ? [cfg.provider].concat(['openrouter', 'groq', 'gemini'].filter((p) => p !== cfg.provider))
-    : ['openrouter', 'groq', 'gemini'];
+  const active = (cfg.aiProvider || cfg.provider || 'openrouter').toLowerCase();
+  const order = [active].concat(['openrouter', 'groq', 'gemini'].filter((p) => p !== active));
   for (const p of order) {
     const keys = toList(cfg[p + 'ApiKey'] || cfg[p + 'ApiKeys']);
+    if (!keys.length) continue;
     const models = toList(cfg[p + 'Model'] || cfg[p + 'Models']);
     const ml = models.length ? models : (p === 'openrouter' ? ['google/gemma-4-31b-it:free'] : p === 'groq' ? ['openai/gpt-oss-20b'] : ['gemini-2.0-flash']);
-    if (!keys.length) continue;
     for (const key of keys) for (const model of ml) chain.push({ provider: p, apiKey: key, model: model });
   }
   return chain;
@@ -73,10 +71,7 @@ function buildChain(cfg) {
 
 export async function getAIReply(messages, cfg) {
   const chain = buildChain(cfg);
-  if (!chain.length) {
-    logger.warn('no AI config');
-    return FALLBACK_REPLY;
-  }
+  if (!chain.length) { logger.warn('no AI config'); return FALLBACK_REPLY; }
   let lastErr = null;
   for (const entry of chain) {
     try {
