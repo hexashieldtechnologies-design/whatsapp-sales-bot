@@ -1,6 +1,6 @@
 // adminPanel.js — single protected page: password login, then QR (top) +
-// settings (bottom) together. Password defaults to 'dev'. Model fields are
-// dropdowns so the owner never has to type model names.
+// settings (bottom). AI provider section is dynamic: pick a provider, add
+// multiple keys (newline-separated) for automatic fallback.
 import express from 'express';
 import qrcode from 'qrcode';
 import { getSettings, saveSettings, MODEL_LISTS } from '../db.js';
@@ -41,7 +41,7 @@ function selectOptions(list, current) {
   return opts;
 }
 
-function baseHtml(body) {
+function baseHtml(body, extraScript = '') {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Bot Admin</title>
 <style>
@@ -52,9 +52,11 @@ function baseHtml(body) {
  .card h2{font-size:16px;margin:0 0 14px;color:#e6e6e6;}
  label{display:block;font-size:13px;color:#aab0ba;margin:12px 0 4px;}
  input,select,textarea{width:100%;box-sizing:border-box;padding:10px 11px;border-radius:7px;border:1px solid #333845;background:#13161c;color:#e6e6e6;font-size:14px;}
- textarea{min-height:80px;resize:vertical;font-family:inherit;}
+ textarea{min-height:60px;resize:vertical;font-family:inherit;}
  button{background:#2563eb;color:#fff;border:0;padding:11px 22px;border-radius:8px;font-size:15px;cursor:pointer;margin-top:8px;}
  button:hover{background:#1d4ed8;}
+ .addkey{background:#2a2e37;color:#e6e6e6;padding:7px 14px;font-size:13px;margin-top:8px;border:1px solid #3a3f4a;}
+ .addkey:hover{background:#333845;}
  .center{text-align:center;}
  .qrbox{text-align:center;padding:24px;}
  .qrbox img{width:240px;height:240px;border-radius:10px;background:#fff;padding:8px;}
@@ -63,7 +65,10 @@ function baseHtml(body) {
  .err{color:#f87171;background:#3b1220;padding:10px 14px;border-radius:8px;margin-bottom:14px;}
  .note{background:#142a3b;color:#7dd3fc;padding:10px 14px;border-radius:8px;font-size:13px;margin-top:12px;}
  .hint{font-size:12px;color:#6b7280;margin-top:4px;}
-</style></head><body><div class="wrap">${body}</div></body></html>`;
+ .hidden{display:none;}
+</style></head><body><div class="wrap">${body}</div>
+${extraScript}
+</body></html>`;
 }
 
 function loginPage(err) {
@@ -121,44 +126,67 @@ ${qrSection}
 <label>Admin numbers (comma-separated)</label><input name="adminNumbers" value="${value('adminNumbers')}" placeholder="91XXXXXXXXXX,91YYYYYYYYYY">
 </div>
 <div class="card"><h2>🚫 Number Restriction (Blocklist)</h2>
-<label>Blocked numbers (comma-separated — inhe bot reply nahi karega)</label><input name="blockedNumbers" value="${value('blockedNumbers')}" placeholder="91XXXXXXXXXX,91YYYYYYYYYY">
-<div class="hint">Ya WhatsApp admin se: ".block 91XXXXX" likh kar bhi block kar sakte ho.</div>
+<label>Blocked numbers (comma-separated)</label><input name="blockedNumbers" value="${value('blockedNumbers')}" placeholder="91XXXXXXXXXX,91YYYYYYYYYY">
 </div>
 <div class="card"><h2>📦 Product catalog</h2>
 <label>Product API URL (GET → JSON array)</label><input name="productApiUrl" value="${value('productApiUrl')}" placeholder="https://yourapi.com/products">
 <label>Product API create URL (optional)</label><input name="productApiCreateUrl" value="${value('productApiCreateUrl')}" placeholder="leave blank to store in DB">
 </div>
 <div class="card"><h2>🤖 AI Provider</h2>
-<label>Provider</label>
-<select name="aiProvider">
+<label>Provider select karo</label>
+<select name="aiProvider" id="aiProvider">
 <option value="groq" ${selected('aiProvider','groq')}>Groq (default)</option>
 <option value="gemini" ${selected('aiProvider','gemini')}>Gemini</option>
 <option value="openrouter" ${selected('aiProvider','openrouter')}>OpenRouter</option>
 </select>
-<label>Groq API key</label><input name="groqApiKey" value="${value('groqApiKey')}" placeholder="gsk_...">
+
+<div id="sec-groq" class="provsec ${settings.aiProvider === 'gemini' || settings.aiProvider === 'openrouter' ? 'hidden' : ''}">
+<label>Groq API keys (ek key per line — multiple keys = auto fallback)</label>
+<textarea name="groqApiKey" rows="3" placeholder="gsk_...">${value('groqApiKey')}</textarea>
 <label>Groq model</label><select name="groqModel">${mo(MODEL_LISTS.groq, settings.groqModel)}</select>
 <label>Groq vision model</label><select name="groqVisionModel">${mo(MODEL_LISTS.groq, settings.groqVisionModel)}</select>
-<label>Gemini API key</label><input name="geminiApiKey" value="${value('geminiApiKey')}" placeholder="AIza...">
+</div>
+
+<div id="sec-gemini" class="provsec ${settings.aiProvider !== 'gemini' ? 'hidden' : ''}">
+<label>Gemini API keys (ek key per line — multiple keys = auto fallback)</label>
+<textarea name="geminiApiKey" rows="3" placeholder="AIza...">${value('geminiApiKey')}</textarea>
 <label>Gemini model</label><select name="geminiModel">${mo(MODEL_LISTS.gemini, settings.geminiModel)}</select>
-<label>OpenRouter API key</label><input name="openrouterApiKey" value="${value('openrouterApiKey')}" placeholder="sk-or-...">
+</div>
+
+<div id="sec-openrouter" class="provsec ${settings.aiProvider !== 'openrouter' ? 'hidden' : ''}">
+<label>OpenRouter API keys (ek key per line — multiple keys = auto fallback)</label>
+<textarea name="openrouterApiKey" rows="3" placeholder="sk-or-...">${value('openrouterApiKey')}</textarea>
 <label>OpenRouter model</label><select name="openrouterModel">${mo(MODEL_LISTS.openrouter, settings.openrouterModel)}</select>
-<div class="hint">💡 Model dropdown se select karo — manually type karne ki zaroorat nahi.</div>
+</div>
+
+<div class="hint">💡 Ek provider select karo, uski keys daalo (jitni chahiye, ek line mein ek). Ek key fail/rate-limit ho jaye to next key automatically use hoti hai (fallback).</div>
 </div>
 <div class="card"><h2>🔔 Notifications (optional)</h2>
-<label>Notify webhook URL (customer message aane par yahan POST hoga)</label><input name="notifyWebhookUrl" value="${value('notifyWebhookUrl')}" placeholder="https://yourserver.com/hook">
-<div class="hint">Har customer message ka JSON payload is URL par bheja jayega.</div>
+<label>Notify webhook URL</label><input name="notifyWebhookUrl" value="${value('notifyWebhookUrl')}" placeholder="https://yourserver.com/hook">
 </div>
 <div class="card"><h2>🎓 Owner Training (optional)</h2>
-<label>Apne bot ko kya sikhana hai? (greeting style, pricing rules, offers, etc.)</label>
+<label>Apne bot ko kya sikhana hai?</label>
 <textarea name="ownerTraining" placeholder="Bot ko ye batao ki kaise baat karni hai...">${value('ownerTraining')}</textarea>
-<div class="hint">Ye instructions har customer conversation mein bot follow karega.</div>
 </div>
 <div class="card"><h2>📣 Broadcast</h2>
 <label>Broadcast window (days)</label><input name="broadcastWindowDays" type="number" value="${value('broadcastWindowDays')}">
 </div>
 <button type="submit">Save settings</button>
 </form>
-<form method="POST" action="/logout"><button type="submit" style="background:#dc2626;">Logout</button></form>`);
+<form method="POST" action="/logout"><button type="submit" style="background:#dc2626;">Logout</button></form>`,
+`<script>
+(function(){
+  const sel = document.getElementById('aiProvider');
+  function update(){
+    const v = sel.value;
+    ['groq','gemini','openrouter'].forEach(function(p){
+      const sec = document.getElementById('sec-'+p);
+      if (sec) sec.classList.toggle('hidden', p !== v);
+    });
+  }
+  if (sel) { sel.addEventListener('change', update); update(); }
+})();
+</script>`);
 }
 
 export function makeAdminPanelRouter(getQrState) {
