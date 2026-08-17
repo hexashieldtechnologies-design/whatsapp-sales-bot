@@ -83,6 +83,9 @@ export const DEFAULT_SETTINGS = {
   adminNumbers: '',
   broadcastWindowDays: 45,
   ownerTraining: '',
+  blockedNumbers: '',
+  notifyWebhookUrl: '',
+  botPaused: false,
 };
 
 export async function getSettings() {
