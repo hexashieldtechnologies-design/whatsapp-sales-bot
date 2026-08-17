@@ -39,10 +39,10 @@ export const SETTINGS_ID = 'settings';
 
 export const MODEL_LISTS = {
   groq: [
-    'allam-2-7b',
-    'qwen/qwen3.6-27b',
-    'openai/gpt-oss-120b',
     'openai/gpt-oss-20b',
+    'openai/gpt-oss-120b',
+    'qwen/qwen3.6-27b',
+    'allam-2-7b',
     'groq/compound',
     'groq/compound-mini',
   ],
@@ -73,8 +73,8 @@ export const DEFAULT_SETTINGS = {
   productApiCreateUrl: '',
   aiProvider: process.env.AI_PROVIDER || 'groq',
   groqApiKey: '',
-  groqModel: 'allam-2-7b',
-  groqVisionModel: 'allam-2-7b',
+  groqModel: 'openai/gpt-oss-20b',
+  groqVisionModel: 'openai/gpt-oss-20b',
   openrouterApiKey: '',
   openrouterModel: 'openai/gpt-4o-mini',
   geminiApiKey: '',
