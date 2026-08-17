@@ -18,8 +18,9 @@ const MENU = `Admin mode ✅ — aap ye kar sakte hain:
 3️⃣ Ek rule set karo
 4️⃣ Sab products delete karo
 5️⃣ Bot ko train karo ('train: <instructions>')
-6️⃣ .stop — bot band   |   .start — bot chalu   |   .status — bot ka haal
-7️⃣ .block 91XXX — number block   |   .unblock 91XXX
+6️⃣ .stop — sab band  |  .stop 91XXXXX — sirf us customer ko band
+    .start — sab chalu  |  .start 91XXXXX — sirf us customer ko chalu
+7️⃣ .block 91XXX / .unblock 91XXX — number block/unblock
 Bas type/photo/voice mein bata dijiye.`;
 
 const INTENT_SCHEMA = {
@@ -45,6 +46,10 @@ function messageKind(message) {
   if (message.imageMessage) return 'image';
   if (message.audioMessage || message.ptvMessage) return 'audio';
   return 'text';
+}
+
+function listSet(csv) {
+  return new Set(String(csv || '').split(',').map((x) => x.trim()).filter(Boolean).map(normalizeNumber));
 }
 
 export async function handleAdmin(sock, senderJid, senderNumber, message, settings) {
@@ -95,24 +100,46 @@ export async function handleAdmin(sock, senderJid, senderNumber, message, settin
     return '⚠️ Aap SAB products delete karna chahte hain (DB se)? Ye undo nahi ho sakta.\n\nConfirm karo (haan/nahi).';
   }
 
+  // ---- STOP / START (global or per-customer) ----
+  const stopNum = text.match(/\.?stop\s+([0-9+\-\s]{8,})/i);
+  if (stopNum) {
+    const num = normalizeNumber(stopNum[1]);
+    const s = await getSettings();
+    const set = listSet(s.pausedNumbers);
+    set.add(num);
+    await saveSettings({ pausedNumbers: [...set].join(',') });
+    return '⏸️ Customer ' + num + ' ke liye bot PAUSE ho gaya. Ab isse reply nahi karega. ".start ' + num + '" se phir chalu karein.';
+  }
+  const startNum = text.match(/\.?start\s+([0-9+\-\s]{8,})/i);
+  if (startNum) {
+    const num = normalizeNumber(startNum[1]);
+    const s = await getSettings();
+    const set = listSet(s.pausedNumbers);
+    set.delete(num);
+    await saveSettings({ pausedNumbers: [...set].join(',') });
+    return '▶️ Customer ' + num + ' ke liye bot RESUME ho gaya. Ab isse reply karega.';
+  }
+
   if (/\.?stop\b/.test(lower) && !/botanist|stopover|non-?stop/.test(lower)) {
     await saveSettings({ botPaused: true });
-    return '⏸️ Bot STOP ho gaya. Ab customer messages ka reply nahi dega. ".start" bhejo chalu karne ke liye.';
+    return '⏸️ Bot pura STOP ho gaya (sab customers ke liye). ".start" bhejo chalu karne ke liye.';
   }
   if (/\.?start\b/.test(lower) && !/starter|restart/.test(lower)) {
     await saveSettings({ botPaused: false });
-    return '▶️ Bot START ho gaya. Ab customer messages ka reply dega.';
+    return '▶️ Bot pura START ho gaya. Ab customer messages ka reply dega.';
   }
   if (/\.?status\b/.test(lower)) {
     const s = await getSettings();
-    return s.botPaused ? '⏸️ Bot status: STOPPED (reply nahi de raha).' : '▶️ Bot status: RUNNING (reply de raha).';
+    const paused = s.pausedNumbers ? listSet(s.pausedNumbers).size : 0;
+    return (s.botPaused ? '⏸️ Bot: STOPPED (sab band).' : '▶️ Bot: RUNNING.') + (paused ? ' ' + paused + ' customer individually paused.' : '');
   }
+
   const bm = text.match(/\.?block\s+([0-9+\-\s]+)/i);
   if (bm) {
     const num = normalizeNumber(bm[1]);
     if (!num) return '❌ Number sahi se do: ".block 91XXXXXXXXXX"';
     const s = await getSettings();
-    const existing = new Set((s.blockedNumbers || '').split(',').map(normalizeNumber).filter(Boolean));
+    const existing = listSet(s.blockedNumbers);
     existing.add(num);
     await saveSettings({ blockedNumbers: [...existing].join(',') });
     return '🚫 Number ' + num + ' block ho gaya. Bot isse reply nahi karega.';
@@ -121,7 +148,7 @@ export async function handleAdmin(sock, senderJid, senderNumber, message, settin
   if (um) {
     const num = normalizeNumber(um[1]);
     const s = await getSettings();
-    const existing = new Set((s.blockedNumbers || '').split(',').map(normalizeNumber).filter(Boolean));
+    const existing = listSet(s.blockedNumbers);
     existing.delete(num);
     await saveSettings({ blockedNumbers: [...existing].join(',') });
     return '✅ Number ' + num + ' unblock ho gaya.';
