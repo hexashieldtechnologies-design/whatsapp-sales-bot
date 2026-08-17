@@ -22,7 +22,22 @@ function endpointFor(provider) {
   return 'https://api.groq.com/openai/v1/chat/completions';
 }
 
-async function callProviderChat(provider, apiKey, model, messages) {
+function buildChain(cfg) {
+  const chain = [];
+  const active = (cfg.aiProvider || cfg.provider || 'openrouter').toLowerCase();
+  const order = [active].concat(['openrouter', 'groq', 'gemini'].filter((p) => p !== active));
+  for (const p of order) {
+    const keys = toList(cfg[p + 'ApiKey'] || cfg[p + 'ApiKeys'] || (p === active ? cfg.apiKeys : undefined) || (p === active ? cfg.apiKey : undefined));
+    if (!keys.length) continue;
+    let models = toList(cfg[p + 'Model'] || cfg[p + 'Models']);
+    if (!models.length && p === active && cfg.model) models = toList(cfg.model);
+    const ml = models.length ? models : (p === 'openrouter' ? ['google/gemma-4-31b-it:free'] : p === 'groq' ? ['openai/gpt-oss-20b'] : ['gemini-2.0-flash']);
+    for (const key of keys) for (const model of ml) chain.push({ provider: p, apiKey: key, model: model });
+  }
+  return chain;
+}
+
+async function callChat(provider, apiKey, model, messages, opts) {
   if (provider === 'gemini') {
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
     const genAI = new GoogleGenerativeAI(apiKey);
@@ -40,10 +55,12 @@ async function callProviderChat(provider, apiKey, model, messages) {
     if (!text) throw new Error('empty response');
     return cleanOutput(text);
   }
+  const body = { model, messages, temperature: opts && opts.temperature != null ? opts.temperature : 0.7, max_tokens: opts && opts.maxTokens ? opts.maxTokens : 800 };
+  if (opts && opts.json) body.response_format = { type: 'json_object' };
   const res = await fetch(endpointFor(provider), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKey },
-    body: JSON.stringify({ model, messages, temperature: 0.7, max_tokens: 800 }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
@@ -55,27 +72,13 @@ async function callProviderChat(provider, apiKey, model, messages) {
   return cleanOutput(content);
 }
 
-function buildChain(cfg) {
-  const chain = [];
-  const active = (cfg.aiProvider || cfg.provider || 'openrouter').toLowerCase();
-  const order = [active].concat(['openrouter', 'groq', 'gemini'].filter((p) => p !== active));
-  for (const p of order) {
-    const keys = toList(cfg[p + 'ApiKey'] || cfg[p + 'ApiKeys']);
-    if (!keys.length) continue;
-    const models = toList(cfg[p + 'Model'] || cfg[p + 'Models']);
-    const ml = models.length ? models : (p === 'openrouter' ? ['google/gemma-4-31b-it:free'] : p === 'groq' ? ['openai/gpt-oss-20b'] : ['gemini-2.0-flash']);
-    for (const key of keys) for (const model of ml) chain.push({ provider: p, apiKey: key, model: model });
-  }
-  return chain;
-}
-
 export async function getAIReply(messages, cfg) {
   const chain = buildChain(cfg);
   if (!chain.length) { logger.warn('no AI config'); return FALLBACK_REPLY; }
   let lastErr = null;
   for (const entry of chain) {
     try {
-      const text = await callProviderChat(entry.provider, entry.apiKey, entry.model, messages);
+      const text = await callChat(entry.provider, entry.apiKey, entry.model, messages);
       logger.info({ provider: entry.provider, model: entry.model }, 'AI reply succeeded');
       return text;
     } catch (e) {
@@ -87,4 +90,54 @@ export async function getAIReply(messages, cfg) {
   return FALLBACK_REPLY;
 }
 
-export default { getAIReply, FALLBACK_REPLY };
+export async function extractJSON(schema, prompt, cfg) {
+  const messages = [
+    { role: 'system', content: 'You output only valid JSON. No markdown fences, no commentary.' },
+    { role: 'user', content: prompt + '\n\nReturn ONLY a JSON object matching this shape:\n' + JSON.stringify(schema) },
+  ];
+  const chain = buildChain(cfg);
+  if (!chain.length) throw new Error('no AI model configured');
+  let lastErr = null;
+  for (const entry of chain) {
+    try {
+      const raw = await callChat(entry.provider, entry.apiKey, entry.model, messages, { json: true, temperature: 0.1, maxTokens: 1500 });
+      return JSON.parse(String(raw).replace(/```json|```/g, '').trim());
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error('extractJSON failed');
+}
+
+export async function describeImage(imageDataUrl, instruction, cfg) {
+  const chain = buildChain(cfg);
+  if (!chain.length) throw new Error('no AI model configured');
+  let lastErr = null;
+  for (const entry of chain) {
+    try {
+      if (entry.provider === 'gemini') {
+        const { GoogleGenerativeAI } = await import('@google/generative-ai');
+        const genAI = new GoogleGenerativeAI(entry.apiKey);
+        const gm = genAI.getGenerativeModel({ model: entry.model });
+        const base64 = imageDataUrl.split(',')[1];
+        const mime = imageDataUrl.match(/^data:([^;]+)/)?.[1] || 'image/jpeg';
+        const result = await gm.generateContent([{ inlineData: { data: base64, mimeType: mime } }, { text: instruction }]);
+        return cleanOutput(result.response.text());
+      }
+      const res = await fetch(endpointFor(entry.provider), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + entry.apiKey },
+        body: JSON.stringify({
+          model: entry.model,
+          messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: imageDataUrl } }, { type: 'text', text: instruction }] }],
+          temperature: 0.1,
+          max_tokens: 1000,
+        }),
+      });
+      if (!res.ok) throw new Error('vision provider ' + res.status);
+      const data = await res.json();
+      return cleanOutput(data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content || '');
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error('describeImage failed');
+}
+
+export default { getAIReply, extractJSON, describeImage, FALLBACK_REPLY };
