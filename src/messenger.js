@@ -8,6 +8,19 @@ import pino from 'pino';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
+const seenIds = new Set();
+const SEEN_MAX = 1000;
+function hasSeen(id) {
+  if (!id) return false;
+  if (seenIds.has(id)) return true;
+  seenIds.add(id);
+  if (seenIds.size > SEEN_MAX) {
+    const it = seenIds.values();
+    for (let i = 0; i < 200; i++) seenIds.delete(it.next().value);
+  }
+  return false;
+}
+
 function numSet(csv) {
   return new Set(String(csv || '').split(',').map((x) => x.trim()).filter(Boolean).map(normalizeNumber));
 }
@@ -29,8 +42,23 @@ async function notifyWebhook(settings, payload) {
 export async function handleInbound(sock, message, settings) {
   const key = message.key || {};
   if (key.fromMe) return;
+
   const remoteJid = key.remoteJid;
-  if (!remoteJid || remoteJid.endsWith('@g.us') || remoteJid.endsWith('@broadcast')) return;
+  if (!remoteJid) return;
+
+  if (
+    remoteJid.endsWith('@g.us') ||
+    remoteJid.endsWith('@broadcast') ||
+    remoteJid.endsWith('@newsletter') ||
+    key.participant
+  ) {
+    return;
+  }
+
+  if (hasSeen(key.id)) {
+    logger.info('duplicate message id %s — skipping', key.id);
+    return;
+  }
 
   const senderNumber = normalizeNumber(remoteJid);
 
