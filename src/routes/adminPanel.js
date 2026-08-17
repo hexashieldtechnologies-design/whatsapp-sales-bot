@@ -1,6 +1,6 @@
 // adminPanel.js — single protected page: password login, then QR + phone-number
-// pairing, plus settings. AI provider section is dynamic: pick a provider, add
-// multiple keys (newline-separated) for automatic fallback.
+// pairing, plus settings. QR auto-refreshes via client-side polling (no page
+// reload). AI provider section is dynamic (multiple keys with fallback).
 import express from 'express';
 import qrcode from 'qrcode';
 import { getSettings, saveSettings, MODEL_LISTS } from '../db.js';
@@ -88,20 +88,14 @@ async function panelPage(settings, qrState, saved) {
   const value = (k) => esc(settings[k] ?? '');
   const selected = (k, v) => ((settings[k] ?? 'groq') === v ? 'selected' : '');
 
-  let qrSection = '';
-  if (qrState.connected && qrState.me) {
-    qrSection = `<div class="card qrbox"><h2>📱 WhatsApp Status</h2>
-<span class="badge ok">✅ Connected</span>
-<p style="font-size:18px;margin:8px 0;">${esc(qrState.me)}</p></div>`;
-  } else {
-    let img = '';
-    if (qrState.qr) { try { img = await qrcode.toDataURL(qrState.qr); } catch (e) { img = ''; } }
-    qrSection = `<div class="card"><h2>📱 WhatsApp connect karo</h2>
-${qrState.qr
-  ? `<span class="badge wait">QR active — auto-refresh</span><div class="qrbox">${img ? `<img src="${img}" alt="QR">` : '<p>QR loading…</p>'}
-<p style="color:#9aa0aa;">WhatsApp &gt; Linked devices &gt; Link a device</p></div>`
+  const qrSection = `<div class="card"><h2>📱 WhatsApp connect karo</h2>
+<div id="qrStatus">
+${qrState.connected && qrState.me
+  ? `<span class="badge ok">✅ Connected</span><p style="font-size:18px;margin:8px 0;">${esc(qrState.me)}</p>`
   : `<span class="badge wait">⏳ Connecting… QR generate hone ka wait</span>`}
-<div class="note">Ye section har 4 second mein refresh hota hai jab tak connect nahi ho jata.</div>
+</div>
+<div id="qrBox" class="qrbox"></div>
+<div class="note">QR apne aap har 4 second mein refresh hota hai (page reload nahi hota).</div>
 <hr style="border:0;border-top:1px solid #2a2e37;margin:18px 0;">
 <h2>📞 Ya phone number se link karo (no QR)</h2>
 <p style="font-size:13px;color:#aab0ba;">Country code ke saath apna WhatsApp number daalo (e.g. India: 919812345678). Phir 8-digit code milega.</p>
@@ -109,9 +103,6 @@ ${qrState.qr
 <button type="button" id="pairBtn">Code lo</button>
 <div id="pairResult"></div>
 </div>`;
-  }
-
-  const savedNote = saved ? '<div style="background:#e6f4ea;color:#14532d;padding:10px 14px;border-radius:8px;margin-bottom:16px;">✅ Saved. Settings live ho gaye.</div>' : '';
 
   const mo = (list, current) => selectOptions(list, current);
 
@@ -218,6 +209,25 @@ ${qrSection}
       });
     });
   }
+
+  var qrStatus = document.getElementById('qrStatus');
+  var qrBox = document.getElementById('qrBox');
+  function pollQr(){
+    if (!qrStatus || !qrBox) return;
+    fetch('/qr').then(function(r){ return r.json(); }).then(function(d){
+      if (d.connected && d.me) {
+        qrStatus.innerHTML = '<span class="badge ok">✅ Connected</span><p style="font-size:18px;margin:8px 0;">'+ (d.me||'') +'</p>';
+        qrBox.innerHTML = '';
+      } else if (d.qrDataURL) {
+        qrStatus.innerHTML = '<span class="badge wait">QR active — scan karo</span>';
+        qrBox.innerHTML = '<img src="'+d.qrDataURL+'" alt="QR"><p style="color:#9aa0aa;">WhatsApp &gt; Linked devices &gt; Link a device</p>';
+      } else {
+        qrStatus.innerHTML = '<span class="badge wait">⏳ Connecting… QR generate hone ka wait</span>';
+      }
+    }).catch(function(){});
+  }
+  pollQr();
+  setInterval(pollQr, 4000);
 })();
 </script>`);
 }
@@ -227,7 +237,6 @@ export function makeAdminPanelRouter(getQrState) {
     if (!isAuthed(req)) return res.send(loginPage());
     const settings = await getSettings();
     const qrState = getQrState ? getQrState() : {};
-    if (qrState.qr && !qrState.connected) res.setHeader('Refresh', '4');
     res.send(await panelPage(settings, qrState, false));
   });
 
