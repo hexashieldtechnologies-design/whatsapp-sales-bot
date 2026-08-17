@@ -14,6 +14,7 @@ const FIELD_NAMES = [
   'groqApiKey', 'groqModel', 'groqVisionModel',
   'openrouterApiKey', 'openrouterModel', 'geminiApiKey', 'geminiModel',
   'ownerWhatsappNumber', 'adminNumbers', 'broadcastWindowDays', 'ownerTraining',
+  'blockedNumbers', 'notifyWebhookUrl',
 ];
 
 function getPassword() {
@@ -119,6 +120,10 @@ ${qrSection}
 <label>Owner WhatsApp number (escalation + admin)</label><input name="ownerWhatsappNumber" value="${value('ownerWhatsappNumber')}" placeholder="91XXXXXXXXXX">
 <label>Admin numbers (comma-separated)</label><input name="adminNumbers" value="${value('adminNumbers')}" placeholder="91XXXXXXXXXX,91YYYYYYYYYY">
 </div>
+<div class="card"><h2>🚫 Number Restriction (Blocklist)</h2>
+<label>Blocked numbers (comma-separated — inhe bot reply nahi karega)</label><input name="blockedNumbers" value="${value('blockedNumbers')}" placeholder="91XXXXXXXXXX,91YYYYYYYYYY">
+<div class="hint">Ya WhatsApp admin se: ".block 91XXXXX" likh kar bhi block kar sakte ho.</div>
+</div>
 <div class="card"><h2>📦 Product catalog</h2>
 <label>Product API URL (GET → JSON array)</label><input name="productApiUrl" value="${value('productApiUrl')}" placeholder="https://yourapi.com/products">
 <label>Product API create URL (optional)</label><input name="productApiCreateUrl" value="${value('productApiCreateUrl')}" placeholder="leave blank to store in DB">
@@ -138,6 +143,10 @@ ${qrSection}
 <label>OpenRouter API key</label><input name="openrouterApiKey" value="${value('openrouterApiKey')}" placeholder="sk-or-...">
 <label>OpenRouter model</label><select name="openrouterModel">${mo(MODEL_LISTS.openrouter, settings.openrouterModel)}</select>
 <div class="hint">💡 Model dropdown se select karo — manually type karne ki zaroorat nahi.</div>
+</div>
+<div class="card"><h2>🔔 Notifications (optional)</h2>
+<label>Notify webhook URL (customer message aane par yahan POST hoga)</label><input name="notifyWebhookUrl" value="${value('notifyWebhookUrl')}" placeholder="https://yourserver.com/hook">
+<div class="hint">Har customer message ka JSON payload is URL par bheja jayega.</div>
 </div>
 <div class="card"><h2>🎓 Owner Training (optional)</h2>
 <label>Apne bot ko kya sikhana hai? (greeting style, pricing rules, offers, etc.)</label>
