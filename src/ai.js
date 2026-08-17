@@ -1,7 +1,7 @@
 // ai.js — provider-agnostic AI adapter.
 // Chat completions (text), vision (image -> text), and audio transcription
 // (voice notes) all live here so the rest of the app doesn't care which
-// provider is active.
+// provider is active. Multiple API keys are tried in order for fallback.
 import pino from 'pino';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
@@ -13,7 +13,20 @@ export function hasAnyModel(cfg) {
   return Boolean(cfg && cfg.apiKey && cfg.model);
 }
 
-// Low-level OpenAI-compatible chat completion (Groq + OpenRouter share this).
+async function withKeyFallback(cfg, fn) {
+  const keys = cfg && cfg.apiKeys && cfg.apiKeys.length ? cfg.apiKeys : (cfg && cfg.apiKey ? [cfg.apiKey] : []);
+  let lastErr = null;
+  for (const key of keys) {
+    try {
+      return await fn({ ...cfg, apiKey: key });
+    } catch (e) {
+      lastErr = e;
+      logger.warn({ err: e.message, provider: cfg.provider }, 'key attempt failed, trying next');
+    }
+  }
+  throw lastErr || new Error('no api keys available');
+}
+
 async function openAiCompatChat(cfg, messages, { endpoint, temperature = 0.7, maxTokens = 800 } = {}) {
   const res = await fetch(endpoint, {
     method: 'POST',
@@ -61,7 +74,6 @@ async function geminiChat(cfg, messages) {
   const genAI = new GoogleGenerativeAI(cfg.apiKey);
   const model = genAI.getGenerativeModel({ model: cfg.model });
 
-  // Gemini doesn't take a raw "system" role message in the same array position.
   let system = '';
   const parts = [];
   for (const m of messages) {
@@ -82,53 +94,51 @@ async function geminiChat(cfg, messages) {
   return text.trim();
 }
 
-// Text chat reply — the main entry point for customer + admin conversations.
 export async function getAIReply(messages, cfg) {
-  if (!hasAnyModel(cfg)) {
+  if (!hasAnyModel(cfg) && !(cfg?.apiKeys?.length)) {
     logger.warn('no AI config (apiKey/model missing) — returning fallback');
     return FALLBACK_REPLY;
   }
   try {
-    switch (cfg.provider) {
-      case 'openrouter':
-        return await openrouterChat(cfg, messages);
-      case 'gemini':
-        return await geminiChat(cfg, messages);
-      case 'groq':
-      default:
-        return await groqChat(cfg, messages);
-    }
+    return await withKeyFallback(cfg, async (c) => {
+      switch (c.provider) {
+        case 'openrouter':
+          return await openrouterChat(c, messages);
+        case 'gemini':
+          return await geminiChat(c, messages);
+        case 'groq':
+        default:
+          return await groqChat(c, messages);
+      }
+    });
   } catch (e) {
     logger.error({ err: e.message, provider: cfg.provider }, 'AI reply failed');
     return FALLBACK_REPLY;
   }
 }
 
-// Function-calling / structured JSON extraction. Most Groq + OpenRouter models
-// support tool calls natively; we request JSON via a tool definition, falling
-// back to asking for plain JSON text.
 export async function extractJSON(schema, prompt, cfg) {
   const messages = [
     { role: 'system', content: 'You output only valid JSON. No markdown fences, no commentary.' },
     { role: 'user', content: prompt },
   ];
-  if (!hasAnyModel(cfg)) throw new Error('no AI model configured');
+  if (!hasAnyModel(cfg) && !(cfg?.apiKeys?.length)) throw new Error('no AI model configured');
   try {
-    let raw;
-    if (cfg.provider === 'gemini') {
-      raw = await geminiChat(cfg, [
-        messages[0],
-        { role: 'user', content: prompt + '\n\nReturn ONLY a JSON object matching this shape:\n' + JSON.stringify(schema) },
-      ]);
-    } else {
-      const endpoint = cfg.provider === 'openrouter'
+    let raw = await withKeyFallback(cfg, async (c) => {
+      if (c.provider === 'gemini') {
+        return await geminiChat(c, [
+          messages[0],
+          { role: 'user', content: prompt + '\n\nReturn ONLY a JSON object matching this shape:\n' + JSON.stringify(schema) },
+        ]);
+      }
+      const endpoint = c.provider === 'openrouter'
         ? 'https://openrouter.ai/api/v1/chat/completions'
         : 'https://api.groq.com/openai/v1/chat/completions';
       const res = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${c.apiKey}` },
         body: JSON.stringify({
-          model: cfg.model,
+          model: c.model,
           messages,
           temperature: 0.1,
           response_format: { type: 'json_object' },
@@ -137,8 +147,10 @@ export async function extractJSON(schema, prompt, cfg) {
       });
       if (!res.ok) throw new Error('provider ' + res.status);
       const data = await res.json();
-      raw = data?.choices?.[0]?.message?.content;
-    }
+      const content = data?.choices?.[0]?.message?.content;
+      if (!content) throw new Error('empty JSON response');
+      return content;
+    });
     if (!raw) throw new Error('empty JSON response');
     return JSON.parse(raw.replace(/```json|```/g, '').trim());
   } catch (e) {
@@ -147,47 +159,47 @@ export async function extractJSON(schema, prompt, cfg) {
   }
 }
 
-// Vision: extract text/structured info from an image (URL or base64 data URL).
 export async function describeImage(imageDataUrl, instruction, cfg) {
   try {
-    if (cfg.provider === 'gemini') {
-      const { GoogleGenerativeAI } = await import('@google/generative-ai');
-      const genAI = new GoogleGenerativeAI(cfg.apiKey);
-      const model = genAI.getGenerativeModel({ model: cfg.model });
-      const base64 = imageDataUrl.split(',')[1];
-      const mime = imageDataUrl.match(/^data:([^;]+)/)?.[1] || 'image/jpeg';
-      const result = await model.generateContent([
-        { inlineData: { data: base64, mimeType: mime } },
-        { text: instruction },
-      ]);
-      return result.response.text().trim();
-    }
-    // Groq / OpenRouter vision-capable models
-    const visionModel = cfg.visionModel || cfg.model;
-    const endpoint = cfg.provider === 'openrouter'
-      ? 'https://openrouter.ai/api/v1/chat/completions'
-      : 'https://api.groq.com/openai/v1/chat/completions';
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
-      body: JSON.stringify({
-        model: visionModel,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'image_url', image_url: { url: imageDataUrl } },
-              { type: 'text', text: instruction },
-            ],
-          },
-        ],
-        temperature: 0.1,
-        max_tokens: 1000,
-      }),
+    return await withKeyFallback(cfg, async (c) => {
+      if (c.provider === 'gemini') {
+        const { GoogleGenerativeAI } = await import('@google/generative-ai');
+        const genAI = new GoogleGenerativeAI(c.apiKey);
+        const model = genAI.getGenerativeModel({ model: c.model });
+        const base64 = imageDataUrl.split(',')[1];
+        const mime = imageDataUrl.match(/^data:([^;]+)/)?.[1] || 'image/jpeg';
+        const result = await model.generateContent([
+          { inlineData: { data: base64, mimeType: mime } },
+          { text: instruction },
+        ]);
+        return result.response.text().trim();
+      }
+      const visionModel = c.visionModel || c.model;
+      const endpoint = c.provider === 'openrouter'
+        ? 'https://openrouter.ai/api/v1/chat/completions'
+        : 'https://api.groq.com/openai/v1/chat/completions';
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${c.apiKey}` },
+        body: JSON.stringify({
+          model: visionModel,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'image_url', image_url: { url: imageDataUrl } },
+                { type: 'text', text: instruction },
+              ],
+            },
+          ],
+          temperature: 0.1,
+          max_tokens: 1000,
+        }),
+      });
+      if (!res.ok) throw new Error('vision provider ' + res.status);
+      const data = await res.json();
+      return (data?.choices?.[0]?.message?.content || '').trim();
     });
-    if (!res.ok) throw new Error('vision provider ' + res.status);
-    const data = await res.json();
-    return (data?.choices?.[0]?.message?.content || '').trim();
   } catch (e) {
     logger.error({ err: e.message }, 'describeImage failed');
     throw e;
