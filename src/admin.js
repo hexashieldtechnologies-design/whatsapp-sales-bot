@@ -16,20 +16,21 @@ const MENU = `Admin mode ✅ — aap ye kar sakte hain:
 1️⃣ Naya product add karo
 2️⃣ Sabko broadcast bhejo
 3️⃣ Ek rule set karo (jaise 'number maange to de dena')
+4️⃣ Sab products delete karo ('sab products delete karo')
 Bas type/photo/voice mein bata dijiye, main samajh loonga.`;
 
 const INTENT_SCHEMA = {
   type: 'object',
   properties: {
-    intent: { type: 'string', enum: ['add_product', 'broadcast', 'set_rule', 'general'] },
+    intent: { type: 'string', enum: ['add_product', 'broadcast', 'set_rule', 'delete_all_products', 'general'] },
     payload: { type: 'string' },
   },
 };
 
 async function classify(text, settings) {
   const cfg = aiConfig(settings);
-  const prompt = `Classify the admin's message into one intent: add_product, broadcast, set_rule, or general.
-Return JSON { intent, payload } where payload is the extracted content. Message: """${text}"""`;
+  const prompt = `Classify the admin's message into one intent: add_product, broadcast, set_rule, delete_all_products, or general.
+Return JSON { intent, payload } where payload is the extracted content. If the admin wants to delete/clear ALL products or all data, use delete_all_products. Message: """${text}"""`;
   try {
     return await extractJSON(INTENT_SCHEMA, prompt, cfg);
   } catch {
@@ -67,6 +68,8 @@ export async function handleAdmin(sock, senderJid, senderNumber, message, settin
     if (state.type === 'broadcast' && (cancelled || !confirmed)) return '❌ Broadcast cancel kar diya.';
     if (state.type === 'rule' && confirmed) return rules.addRule(state.rule);
     if (state.type === 'rule' && (cancelled || !confirmed)) return '❌ Rule set nahi kiya.';
+    if (state.type === 'delete_all' && confirmed) return addProduct.deleteAllProducts();
+    if (state.type === 'delete_all' && (cancelled || !confirmed)) return '❌ Delete cancel kar diya.';
   }
 
   if (kind === 'image' || kind === 'audio') {
@@ -83,6 +86,11 @@ export async function handleAdmin(sock, senderJid, senderNumber, message, settin
   if (/rules?\s*dikhao|show\s*rules|list\s*rules/.test(lower)) return rules.listRules();
   const rm = text.match(/rule\s+(\d+)\s+(hata|remove|delete|deactivate)/i);
   if (rm) return rules.removeRule(parseInt(rm[1], 10));
+
+  if (/delete (all|sab|saare|sara)|sab (products?|data|saare) (delete|hata|udaa)|sara data delete|clear all products|all products? delete/i.test(lower)) {
+    pending.set(senderNumber, { type: 'delete_all' });
+    return '⚠️ Aap SAB products delete karna chahte hain (DB se)? Ye undo nahi ho sakta.\n\nConfirm karo (haan/nahi).';
+  }
 
   const { intent, payload } = await classify(text, settings);
 
@@ -104,6 +112,10 @@ export async function handleAdmin(sock, senderJid, senderNumber, message, settin
       const rule = await rewriteRule(payload, settings);
       pending.set(senderNumber, { type: 'rule', rule });
       return `Rule aise save karu?\n"${rule}"\n\nConfirm karo (haan/nahi).`;
+    }
+    case 'delete_all_products': {
+      pending.set(senderNumber, { type: 'delete_all' });
+      return '⚠️ Aap SAB products delete karna chahte hain (DB se)? Ye undo nahi ho sakta.\n\nConfirm karo (haan/nahi).';
     }
     default:
       return getAIReply([{ role: 'user', content: text }], aiConfig(settings));
