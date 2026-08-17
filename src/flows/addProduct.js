@@ -53,4 +53,10 @@ export async function saveProduct(product, settings, imageUrl = null) {
   return '✅ Product DB mein add ho gaya (catalog read hone par merge hoga).';
 }
 
-export default { parseProduct, previewProduct, saveProduct };
+export async function deleteAllProducts() {
+  const r = await col('admin_added_products').deleteMany({});
+  invalidateCatalog();
+  return `🗑️ ${r.deletedCount} products delete ho gaye. Catalog ab khali hai (external API products unaffected).`;
+}
+
+export default { parseProduct, previewProduct, saveProduct, deleteAllProducts };
