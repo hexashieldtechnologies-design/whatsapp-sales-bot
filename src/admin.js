@@ -1,10 +1,10 @@
-// admin.js — admin control layer dispatcher. Routes admin messages to the
-// right sub-flow, with per-admin pending-state for multi-step confirmations.
+// admin.js — admin control layer dispatcher.
 import pino from 'pino';
 import { downloadMediaMessage } from '@whiskeysockets/baileys';
 import { aiConfig } from './config.js';
 import { getAIReply, extractJSON, describeImage } from './ai.js';
 import { transcribeAudio, bufferToDataUrl, hostImage } from './media.js';
+import { saveSettings } from './db.js';
 import * as addProduct from './flows/addProduct.js';
 import * as broadcast from './flows/broadcast.js';
 import * as rules from './flows/rules.js';
@@ -15,22 +15,23 @@ const pending = new Map();
 const MENU = `Admin mode ✅ — aap ye kar sakte hain:
 1️⃣ Naya product add karo
 2️⃣ Sabko broadcast bhejo
-3️⃣ Ek rule set karo (jaise 'number maange to de dena')
-4️⃣ Sab products delete karo ('sab products delete karo')
-Bas type/photo/voice mein bata dijiye, main samajh loonga.`;
+3️⃣ Ek rule set karo
+4️⃣ Sab products delete karo
+5️⃣ Bot ko train karo ('train: <instructions>' likho)
+Bas type/photo/voice mein bata dijiye.`;
 
 const INTENT_SCHEMA = {
   type: 'object',
   properties: {
-    intent: { type: 'string', enum: ['add_product', 'broadcast', 'set_rule', 'delete_all_products', 'general'] },
+    intent: { type: 'string', enum: ['add_product', 'broadcast', 'set_rule', 'delete_all_products', 'train', 'general'] },
     payload: { type: 'string' },
   },
 };
 
 async function classify(text, settings) {
   const cfg = aiConfig(settings);
-  const prompt = `Classify the admin's message into one intent: add_product, broadcast, set_rule, delete_all_products, or general.
-Return JSON { intent, payload } where payload is the extracted content. If the admin wants to delete/clear ALL products or all data, use delete_all_products. Message: """${text}"""`;
+  const prompt = `Classify the admin's message into one intent: add_product, broadcast, set_rule, delete_all_products, train, or general.
+Return JSON { intent, payload }. If the admin is teaching/training the bot (giving instructions on how to talk/behave), use train. Message: """${text}"""`;
   try {
     return await extractJSON(INTENT_SCHEMA, prompt, cfg);
   } catch {
@@ -92,6 +93,13 @@ export async function handleAdmin(sock, senderJid, senderNumber, message, settin
     return '⚠️ Aap SAB products delete karna chahte hain (DB se)? Ye undo nahi ho sakta.\n\nConfirm karo (haan/nahi).';
   }
 
+  const trainMatch = text.match(/^train\s*[:\-]\s*(.+)$/is);
+  if (trainMatch) {
+    const instruction = trainMatch[1].trim();
+    await saveSettings({ ownerTraining: instruction });
+    return '✅ Bot trained! Naya training: "' + instruction.slice(0, 200) + (instruction.length > 200 ? '...' : '') + '"';
+  }
+
   const { intent, payload } = await classify(text, settings);
 
   switch (intent) {
@@ -116,6 +124,12 @@ export async function handleAdmin(sock, senderJid, senderNumber, message, settin
     case 'delete_all_products': {
       pending.set(senderNumber, { type: 'delete_all' });
       return '⚠️ Aap SAB products delete karna chahte hain (DB se)? Ye undo nahi ho sakta.\n\nConfirm karo (haan/nahi).';
+    }
+    case 'train': {
+      const instruction = payload && payload.trim() ? payload.trim() : '';
+      if (!instruction) return 'Kya sikhana hai bot ko? "train: <instructions>" likho.';
+      await saveSettings({ ownerTraining: instruction });
+      return '✅ Bot trained! Naya training: "' + instruction.slice(0, 200) + (instruction.length > 200 ? '...' : '') + '"';
     }
     default:
       return getAIReply([{ role: 'user', content: text }], aiConfig(settings));
