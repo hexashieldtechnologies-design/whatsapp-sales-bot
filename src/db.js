@@ -39,12 +39,12 @@ export const SETTINGS_ID = 'settings';
 
 export const MODEL_LISTS = {
   groq: [
-    'llama-3.3-70b-versatile',
-    'llama-3.1-8b-instant',
-    'llama-3.2-90b-vision-preview',
-    'llama-3.2-11b-vision-preview',
-    'mixtral-8x7b-32768',
-    'gemma2-9b-it',
+    'qwen/qwen3.6-27b',
+    'openai/gpt-oss-120b',
+    'openai/gpt-oss-20b',
+    'allam-2-7b',
+    'groq/compound',
+    'groq/compound-mini',
   ],
   gemini: [
     'gemini-2.0-flash',
@@ -73,8 +73,8 @@ export const DEFAULT_SETTINGS = {
   productApiCreateUrl: '',
   aiProvider: process.env.AI_PROVIDER || 'groq',
   groqApiKey: '',
-  groqModel: 'llama-3.3-70b-versatile',
-  groqVisionModel: 'llama-3.2-90b-vision-preview',
+  groqModel: 'qwen/qwen3.6-27b',
+  groqVisionModel: 'qwen/qwen3.6-27b',
   openrouterApiKey: '',
   openrouterModel: 'openai/gpt-4o-mini',
   geminiApiKey: '',
