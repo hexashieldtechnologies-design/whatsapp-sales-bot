@@ -1,5 +1,5 @@
 // index.js — application entry point. Boots Express + Baileys, wires QR page,
-// settings page, health, and the message pipeline.
+// settings page, health, pairing-code flow, and the message pipeline.
 import 'dotenv/config';
 import pino from 'pino';
 import express from 'express';
@@ -14,12 +14,14 @@ import makeHealthRouter from './routes/health.js';
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 const PORT = process.env.PORT || 3000;
 
-// Shared connection state (exposed to the panel + health routes).
 const conn = {
   qr: null,
   connected: false,
   me: null,
+  pairingCode: null,
 };
+
+let sock = null;
 
 function disconnectStatusCode(lastDisconnect) {
   return lastDisconnect?.error?.output?.statusCode
@@ -30,10 +32,11 @@ function disconnectStatusCode(lastDisconnect) {
 async function startSock(settings) {
   const { state, saveCreds } = await useMongoAuthState();
 
-  const sock = makeWASocket({
+  sock = makeWASocket({
     auth: state,
     logger,
     browser: ['WhatsApp Sales Bot', 'Chrome', '1.0.0'],
+    printQRInTerminal: true,
   });
 
   sock.ev.on('creds.update', saveCreds);
@@ -49,6 +52,7 @@ async function startSock(settings) {
     if (connection === 'open') {
       conn.connected = true;
       conn.qr = null;
+      conn.pairingCode = null;
       try {
         conn.me = sock.user?.id ? `${sock.user.id.split(':')[0]}@s.whatsapp.net` : null;
         logger.info('✅ WhatsApp connected as %s', conn.me || 'unknown');
@@ -98,7 +102,26 @@ async function main() {
   app.use(express.urlencoded({ extended: true }));
   app.use(cookieParser());
 
-  const getQrState = () => ({ qr: conn.qr, connected: conn.connected, me: conn.me });
+  const getQrState = () => ({ qr: conn.qr, connected: conn.connected, me: conn.me, pairingCode: conn.pairingCode });
+
+  app.post('/pair', async (req, res) => {
+    try {
+      const phone = String(req.body.phone || '').trim().replace(/[^0-9]/g, '');
+      if (!phone) {
+        return res.json({ ok: false, error: 'Phone number required (with country code, e.g. 919812345678).' });
+      }
+      if (!sock || typeof sock.requestPairingCode !== 'function') {
+        return res.json({ ok: false, error: 'Pairing not available yet. Try again in a few seconds, or scan the QR.' });
+      }
+      const code = await sock.requestPairingCode(phone);
+      conn.pairingCode = code;
+      logger.info('pairing code requested for %s -> %s', phone, code);
+      return res.json({ ok: true, code });
+    } catch (e) {
+      logger.error({ err: e.message }, 'pairing code request failed');
+      return res.json({ ok: false, error: e.message });
+    }
+  });
 
   app.use('/', makeAdminPanelRouter(getQrState));
   app.use('/health', makeHealthRouter(getQrState));
@@ -107,7 +130,7 @@ async function main() {
 
   app.listen(PORT, () => {
     logger.info('HTTP server listening on :%s', PORT);
-    logger.info('  /         → admin panel (QR + settings, password-protected)');
+    logger.info('  /         → admin panel (QR + pairing + settings, password-protected)');
     logger.info('  /health   → status endpoint');
   });
 }
