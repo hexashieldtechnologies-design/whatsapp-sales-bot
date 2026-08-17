@@ -1,19 +1,17 @@
 // sales.js — budget-aware recommendation flow (AI-driven).
-import { aiConfig } from '../config.js';
 import { getAIReply } from '../ai.js';
 import { getCatalog } from '../productCatalog.js';
 import { buildSystemPrompt, getActiveRules } from '../prompts.js';
 
 export function detectEscalation(text) {
   const t = (text || '').toLowerCase();
-  const ownerAsk = /(owner|human|insaan|sir|madam|boss|aadmi|vyakti|person)\s+(se|ko|hai)|(baat karni|batao|karao|bhejo)/.test(t)
-    || /owner se baat|insaan se baat|human se baat|talk to (owner|human|manager)|speak to|number (do|de|mang)|call (karo|karwa|krwa)|deal (karo|karni)/.test(t);
+  const ownerAsk = /(owner|human|insaan|sir|madam|boss|admin|vyakti|person)\s+(se|ko|hai)|(baat karni|batao|karao|bhejo)/.test(t)
+    || /owner se baat|insaan se baat|human se baat|talk to (owner|human|manager)|speak to|number (do|de|man)|call (karo|karwa|krwa)|deal (karo|karni)/.test(t);
   const outOfScope = /bulk|custom order|wholesale|negotiate|discount (manga|kar)|complaint|refund/.test(t);
   return ownerAsk || outOfScope;
 }
 
 export async function handleSales(conversation, messageText, settings) {
-  const cfg = aiConfig(settings);
   const catalog = await getCatalog(settings);
   const rules = await getActiveRules();
 
@@ -31,7 +29,7 @@ export async function handleSales(conversation, messageText, settings) {
   }
   messages.push({ role: 'user', content: messageText });
 
-  return await getAIReply(messages, cfg);
+  return await getAIReply(messages, settings);
 }
 
 export default { handleSales, detectEscalation };
