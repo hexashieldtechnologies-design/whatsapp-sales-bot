@@ -1,5 +1,5 @@
-// adminPanel.js — single protected page: password login, then QR (top) +
-// settings (bottom). AI provider section is dynamic: pick a provider, add
+// adminPanel.js — single protected page: password login, then QR + phone-number
+// pairing, plus settings. AI provider section is dynamic: pick a provider, add
 // multiple keys (newline-separated) for automatic fallback.
 import express from 'express';
 import qrcode from 'qrcode';
@@ -55,8 +55,6 @@ function baseHtml(body, extraScript = '') {
  textarea{min-height:60px;resize:vertical;font-family:inherit;}
  button{background:#2563eb;color:#fff;border:0;padding:11px 22px;border-radius:8px;font-size:15px;cursor:pointer;margin-top:8px;}
  button:hover{background:#1d4ed8;}
- .addkey{background:#2a2e37;color:#e6e6e6;padding:7px 14px;font-size:13px;margin-top:8px;border:1px solid #3a3f4a;}
- .addkey:hover{background:#333845;}
  .center{text-align:center;}
  .qrbox{text-align:center;padding:24px;}
  .qrbox img{width:240px;height:240px;border-radius:10px;background:#fff;padding:8px;}
@@ -66,6 +64,7 @@ function baseHtml(body, extraScript = '') {
  .note{background:#142a3b;color:#7dd3fc;padding:10px 14px;border-radius:8px;font-size:13px;margin-top:12px;}
  .hint{font-size:12px;color:#6b7280;margin-top:4px;}
  .hidden{display:none;}
+ .paircode{font-size:40px;letter-spacing:8px;font-weight:700;color:#4ade80;margin:12px 0;}
 </style></head><body><div class="wrap">${body}</div>
 ${extraScript}
 </body></html>`;
@@ -94,18 +93,22 @@ async function panelPage(settings, qrState, saved) {
     qrSection = `<div class="card qrbox"><h2>📱 WhatsApp Status</h2>
 <span class="badge ok">✅ Connected</span>
 <p style="font-size:18px;margin:8px 0;">${esc(qrState.me)}</p></div>`;
-  } else if (qrState.qr) {
-    let img = '';
-    try { img = await qrcode.toDataURL(qrState.qr); } catch (e) { img = ''; }
-    qrSection = `<div class="card qrbox"><h2>📱 Scan to connect WhatsApp</h2>
-<span class="badge wait">QR active — auto-refresh</span>
-<p style="color:#9aa0aa;">WhatsApp &gt; Linked devices &gt; Link a device</p>
-${img ? `<img src="${img}" alt="QR">` : '<p>QR loading…</p>'}
-<div class="note">Ye page har 4 second mein refresh hota hai jab tak connect nahi ho jata.</div></div>`;
   } else {
-    qrSection = `<div class="card qrbox"><h2>📱 WhatsApp Status</h2>
-<span class="badge wait">⏳ Connecting…</span>
-<p style="color:#9aa0aa;">QR generate hone ka wait ho raha hai (refresh karein).</p></div>`;
+    let img = '';
+    if (qrState.qr) { try { img = await qrcode.toDataURL(qrState.qr); } catch (e) { img = ''; } }
+    qrSection = `<div class="card"><h2>📱 WhatsApp connect karo</h2>
+${qrState.qr
+  ? `<span class="badge wait">QR active — auto-refresh</span><div class="qrbox">${img ? `<img src="${img}" alt="QR">` : '<p>QR loading…</p>'}
+<p style="color:#9aa0aa;">WhatsApp &gt; Linked devices &gt; Link a device</p></div>`
+  : `<span class="badge wait">⏳ Connecting… QR generate hone ka wait</span>`}
+<div class="note">Ye section har 4 second mein refresh hota hai jab tak connect nahi ho jata.</div>
+<hr style="border:0;border-top:1px solid #2a2e37;margin:18px 0;">
+<h2>📞 Ya phone number se link karo (no QR)</h2>
+<p style="font-size:13px;color:#aab0ba;">Country code ke saath apna WhatsApp number daalo (e.g. India: 919812345678). Phir 8-digit code milega.</p>
+<input id="pairPhone" placeholder="919812345678" style="letter-spacing:1px;">
+<button type="button" id="pairBtn">Code lo</button>
+<div id="pairResult"></div>
+</div>`;
   }
 
   const savedNote = saved ? '<div style="background:#e6f4ea;color:#14532d;padding:10px 14px;border-radius:8px;margin-bottom:16px;">✅ Saved. Settings live ho gaye.</div>' : '';
@@ -114,7 +117,7 @@ ${img ? `<img src="${img}" alt="QR">` : '<p>QR loading…</p>'}
 
   return baseHtml(`
 <h1>🤖 WhatsApp Sales Bot</h1>
-<p class="sub">QR scan karo (upar) + settings (neeche) — sab ek hi page par.</p>
+<p class="sub">QR ya phone number se connect karo (upar) + settings (neeche).</p>
 ${qrSection}
 <form method="POST" action="/">
 <div class="card"><h2>🏪 Business</h2>
@@ -176,15 +179,45 @@ ${qrSection}
 <form method="POST" action="/logout"><button type="submit" style="background:#dc2626;">Logout</button></form>`,
 `<script>
 (function(){
-  const sel = document.getElementById('aiProvider');
+  var sel = document.getElementById('aiProvider');
   function update(){
-    const v = sel.value;
+    var v = sel ? sel.value : 'groq';
     ['groq','gemini','openrouter'].forEach(function(p){
-      const sec = document.getElementById('sec-'+p);
+      var sec = document.getElementById('sec-'+p);
       if (sec) sec.classList.toggle('hidden', p !== v);
     });
   }
   if (sel) { sel.addEventListener('change', update); update(); }
+
+  var pairBtn = document.getElementById('pairBtn');
+  var pairPhone = document.getElementById('pairPhone');
+  var pairResult = document.getElementById('pairResult');
+  if (pairBtn && pairPhone) {
+    pairBtn.addEventListener('click', function(){
+      var p = (pairPhone.value||'').replace(/[^0-9]/g,'');
+      if (!p) { pairResult.innerHTML = '<div class="err">Number daalo (country code ke saath).</div>'; return; }
+      pairBtn.disabled = true;
+      pairBtn.textContent = 'Loading...';
+      pairResult.innerHTML = '';
+      fetch('/pair', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ phone: p })
+      }).then(function(r){ return r.json(); }).then(function(d){
+        pairBtn.disabled = false;
+        pairBtn.textContent = 'Code lo';
+        if (d.ok) {
+          pairResult.innerHTML = '<div class="note">Apne phone par WhatsApp kholo → Linked devices → <b>Link with phone number</b> → ye code daalo:</div><div class="paircode">'+d.code+'</div>';
+        } else {
+          pairResult.innerHTML = '<div class="err">'+ (d.error||'Error hua') +'</div>';
+        }
+      }).catch(function(){
+        pairBtn.disabled = false;
+        pairBtn.textContent = 'Code lo';
+        pairResult.innerHTML = '<div class="err">Network error. Dobara try karo.</div>';
+      });
+    });
+  }
 })();
 </script>`);
 }
