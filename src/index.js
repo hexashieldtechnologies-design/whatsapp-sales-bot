@@ -5,6 +5,7 @@ import pino from 'pino';
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import makeWASocket, { DisconnectReason } from '@whiskeysockets/baileys';
+import qrcode from 'qrcode';
 import { connectDB, getSettings } from './db.js';
 import { useMongoAuthState, clearSession, flushAuthState } from './authState.js';
 import { handleInbound } from './messenger.js';
@@ -103,6 +104,23 @@ async function main() {
   app.use(cookieParser());
 
   const getQrState = () => ({ qr: conn.qr, connected: conn.connected, me: conn.me, pairingCode: conn.pairingCode });
+
+  app.get('/qr', async (req, res) => {
+    try {
+      const data = {
+        connected: conn.connected,
+        me: conn.me,
+        qrDataURL: null,
+      };
+      if (!conn.connected && conn.qr) {
+        data.qrDataURL = await qrcode.toDataURL(conn.qr);
+      }
+      return res.json(data);
+    } catch (e) {
+      logger.error({ err: e.message }, 'qr endpoint error');
+      return res.json({ connected: conn.connected, me: conn.me, qrDataURL: null });
+    }
+  });
 
   app.post('/pair', async (req, res) => {
     try {
