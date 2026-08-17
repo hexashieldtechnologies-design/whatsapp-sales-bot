@@ -7,7 +7,6 @@ import { getSettings } from './db.js';
 export function normalizeNumber(input) {
   if (!input) return '';
   let n = String(input).replace(/[^\d]/g, '');
-  // strip common country-code '91' duplication edge cases is left to caller
   return n;
 }
 
@@ -18,7 +17,6 @@ export function adminNumbers(settings) {
   const owner = s.ownerWhatsappNumber;
   if (owner) list.push(owner);
   for (const r of raw) list.push(r);
-  // normalize, dedupe
   const seen = new Set();
   return list
     .map(normalizeNumber)
@@ -31,27 +29,41 @@ export function isAdminNumber(rawNumber, settings) {
   return adminNumbers(settings).includes(norm);
 }
 
-// Resolve the active AI config for the given provider setting.
+// Split a key field into multiple keys (comma OR newline separated), trimming
+// and deduping. Lets the owner paste several keys for automatic fallback.
+export function splitKeys(raw) {
+  if (Array.isArray(raw)) return raw.map((x) => String(x).trim()).filter(Boolean);
+  return String(raw || '')
+    .split(/[,\n]+/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+// Resolve the active AI config for the given provider setting. apiKeys is a
+// list (primary first) so callers can try each in turn as a fallback.
 export function aiConfig(settings) {
   const provider = (settings.aiProvider || 'groq').toLowerCase();
   switch (provider) {
     case 'openrouter':
       return {
         provider: 'openrouter',
-        apiKey: settings.openrouterApiKey,
+        apiKeys: splitKeys(settings.openrouterApiKey),
+        apiKey: splitKeys(settings.openrouterApiKey)[0] || '',
         model: settings.openrouterModel,
       };
     case 'gemini':
       return {
         provider: 'gemini',
-        apiKey: settings.geminiApiKey,
+        apiKeys: splitKeys(settings.geminiApiKey),
+        apiKey: splitKeys(settings.geminiApiKey)[0] || '',
         model: settings.geminiModel,
       };
     case 'groq':
     default:
       return {
         provider: 'groq',
-        apiKey: settings.groqApiKey,
+        apiKeys: splitKeys(settings.groqApiKey),
+        apiKey: splitKeys(settings.groqApiKey)[0] || '',
         model: settings.groqModel,
         visionModel: settings.groqVisionModel,
       };
@@ -62,4 +74,4 @@ export async function loadConfig() {
   return getSettings();
 }
 
-export default { loadConfig, isAdminNumber, adminNumbers, aiConfig, normalizeNumber };
+export default { loadConfig, isAdminNumber, adminNumbers, aiConfig, normalizeNumber, splitKeys };
