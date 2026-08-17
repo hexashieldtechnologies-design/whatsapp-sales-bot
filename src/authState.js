@@ -1,9 +1,9 @@
 // authState.js — Mongo-backed Baileys AuthenticationState.
-// Uses Baileys' own initAuthCreds() + BufferJSON serialization so a fresh
-// session starts from valid credentials (avoids 'error in validating
-// connection' loops). Session survives Railway redeploys via MongoDB.
+// Mirrors use-multi-file-auth-state's contract but persists to MongoDB so the
+// session survives Railway redeploys. Uses initAuthCreds() for a valid fresh
+// session and BufferJSON for (de)serialization.
 import { col } from './db.js';
-import { initAuthCreds, BufferJSON } from '@whiskeysockets/baileys';
+import { initAuthCreds, BufferJSON, proto } from '@whiskeysockets/baileys';
 import pino from 'pino';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
@@ -13,26 +13,22 @@ const SESSION_ID = 'default';
 let creds = null;
 let keys = {};
 
-function toJSON(obj) {
-  return JSON.parse(JSON.stringify(obj, (k, v) => {
-    if (v && typeof v === 'object') {
-      if (Buffer.isBuffer(v)) return { type: 'Buffer', data: v.toString('base64') };
-      if (v.type === 'Buffer' && v.data) {
-        let b = Buffer.from(v.data, 'base64');
-        if (v.subType) b = Uint8Array.from(b);
-        return BufferJSON.replacer(k, { type: v.type, data: b.toString('base64') });
-      }
-      return v;
-    }
-    return v;
-  }));
+// Serialize an object tree for Mongo storage (Buffers -> {type:'Buffer',data}).
+function serialize(obj) {
+  return JSON.parse(JSON.stringify(obj, BufferJSON.replacer));
+}
+
+// Deserialize an object tree read from Mongo back with Buffers revived.
+function deserialize(obj) {
+  if (obj == null) return obj;
+  return JSON.parse(JSON.stringify(obj), BufferJSON.reviver);
 }
 
 async function loadState() {
   const doc = await col('whatsapp_sessions').findOne({ _id: SESSION_ID });
-  if (doc && doc.creds && doc.keys) {
-    creds = doc.creds;
-    keys = doc.keys;
+  if (doc && doc.creds) {
+    creds = deserialize(doc.creds);
+    keys = deserialize(doc.keys || {});
     logger.info('loaded existing WhatsApp session from Mongo');
   } else {
     creds = initAuthCreds();
@@ -44,7 +40,7 @@ async function loadState() {
 async function persistState() {
   await col('whatsapp_sessions').updateOne(
     { _id: SESSION_ID },
-    { $set: { creds, keys, updatedAt: new Date() } },
+    { $set: { creds: serialize(creds), keys: serialize(keys), updatedAt: new Date() } },
     { upsert: true }
   );
 }
@@ -64,17 +60,36 @@ export async function useMongoAuthState() {
   await loadState();
   return {
     state: {
-      creds: {
-        get: () => creds,
-        set: (v) => { creds = v; },
-      },
+      creds,
       keys: {
-        get: (type, ids) => {
-          const key = `${type}_${ids.join('_')}`;
-          return keys[key];
+        get: async (type, ids) => {
+          const data = {};
+          for (const id of ids) {
+            let value = keys[`${type}_${id}`];
+            if (value != null) {
+              if (type === 'app-state-sync-key') {
+                value = proto.Message.AppStateSyncKeyData.fromObject(value);
+              } else {
+                value = deserialize(value);
+              }
+              data[id] = value;
+            }
+          }
+          return data;
         },
-        set: (data) => {
-          for (const [k, v] of Object.entries(data)) keys[k] = v;
+        set: async (data) => {
+          for (const category in data) {
+            for (const id in data[category]) {
+              const value = data[category][id];
+              const key = `${category}_${id}`;
+              if (value) {
+                keys[key] = serialize(value);
+              } else {
+                delete keys[key];
+              }
+            }
+          }
+          await persistState();
         },
       },
     },
