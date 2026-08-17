@@ -1,5 +1,5 @@
 // messenger.js — inbound message pipeline.
-import { col } from './db.js';
+import { col, saveSettings, getSettings } from './db.js';
 import { isAdminNumber, normalizeNumber } from './config.js';
 import { handleSales, detectEscalation } from './flows/sales.js';
 import { handleEscalation, isPaused } from './flows/escalation.js';
@@ -39,9 +39,48 @@ async function notifyWebhook(settings, payload) {
   }
 }
 
+// Handles control commands the OWNER sends FROM the bot's own account directly
+// in a customer's chat. e.g. open customer X's chat (as the bot), type ".stop"
+// -> customer X is paused. ".start" -> resumed. Returns true if handled.
+async function handleFromMeCommand(sock, key, message, settings) {
+  const text = (message?.conversation || message?.extendedTextMessage?.text || '').trim();
+  const lower = text.toLowerCase();
+  const remoteJid = key.remoteJid;
+  if (!remoteJid || remoteJid.endsWith('@g.us') || remoteJid.endsWith('@broadcast')) return false;
+
+  const customerNumber = normalizeNumber(remoteJid);
+  const isStop = /^[\.\/]?stop\b/.test(lower) && !/botanist|stopover/.test(lower);
+  const isStart = /^[\.\/]?start\b/.test(lower) && !/starter|restart/.test(lower);
+
+  if (isStop) {
+    const s = await getSettings();
+    const set = numSet(s.pausedNumbers);
+    set.add(customerNumber);
+    await saveSettings({ pausedNumbers: [...set].join(',') });
+    logger.info('paused customer %s (from bot account .stop)', customerNumber);
+    await sock.sendMessage(remoteJid, { text: '⏸️ Is chat ke liye auto-reply band kar diya. ".start" se wapas chalu hoga.' });
+    return true;
+  }
+  if (isStart) {
+    const s = await getSettings();
+    const set = numSet(s.pausedNumbers);
+    set.delete(customerNumber);
+    await saveSettings({ pausedNumbers: [...set].join(',') });
+    logger.info('resumed customer %s (from bot account .start)', customerNumber);
+    await sock.sendMessage(remoteJid, { text: '▶️ Is chat ke liye auto-reply chalu kar diya.' });
+    return true;
+  }
+  return false;
+}
+
 export async function handleInbound(sock, message, settings) {
   const key = message.key || {};
-  if (key.fromMe) return;
+
+  // ---- owner sent a command FROM the bot's own account ----
+  if (key.fromMe) {
+    await handleFromMeCommand(sock, key, message.message, settings);
+    return; // never reply to our own messages otherwise
+  }
 
   const remoteJid = key.remoteJid;
   if (!remoteJid) return;
