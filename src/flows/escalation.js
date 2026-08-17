@@ -1,4 +1,6 @@
-// escalation.js — forward customer to human owner + pause window.
+// escalation.js — forward the customer to the human owner. Asks for the
+// customer's number (if they want a call/contact) and sends a summary incl.
+// their number + full context to the owner, then pauses auto-replies.
 import { col } from '../db.js';
 import pino from 'pino';
 
@@ -10,7 +12,11 @@ export async function handleEscalation(sock, conversation, conversationKey, late
   const businessName = settings.businessName || 'our store';
 
   const recent = (conversation.messages || []).slice(-8).map((m) => `${m.role === 'assistant' ? 'Bot' : 'Customer'}: ${m.content}`).join('\n');
-  const summary = `🔔 Escalation from a customer\n\nBusiness: ${businessName}\nCustomer number: ${conversationKey}\n\nRecent conversation:\n${recent || '(none)'}\n\nLatest message:\n"${latestText}"`;
+
+  const typedNumber = (latestText || '').match(/[6-9]\d{9}|(?:\+?91)?[6-9]\d{9}/);
+  const customerNumber = typedNumber ? typedNumber[0] : conversationKey.replace(/@s\..+$/, '');
+
+  const summary = `🔔 Customer wants to talk to you\n\nBusiness: ${businessName}\nCustomer number: ${customerNumber}\nWhatsApp JID: ${conversationKey}\n\nRecent conversation:\n${recent || '(none)'}\n\nLatest message:\n"${latestText}"`;
 
   if (ownerNumber) {
     try {
@@ -24,10 +30,17 @@ export async function handleEscalation(sock, conversation, conversationKey, late
 
   await col('conversations').updateOne(
     { _id: conversationKey },
-    { $set: { escalatedToOwner: true, escalatedAt: new Date(), autoReplyPausedUntil: new Date(Date.now() + PAUSE_MS) } }
+    {
+      $set: {
+        escalatedToOwner: true,
+        escalatedAt: new Date(),
+        customerNumber,
+        autoReplyPausedUntil: new Date(Date.now() + PAUSE_MS),
+      },
+    }
   );
 
-  return 'Main aapki baat owner tak pahuncha raha hoon, woh jald hi aapse contact karenge. 🙏';
+  return 'Main aapki baat owner tak pahuncha raha hoon. Woh jald hi aapse contact karenge. 🙏';
 }
 
 export function isPaused(conversation) {
