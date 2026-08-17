@@ -1,5 +1,4 @@
-// messenger.js — inbound message pipeline. The admin-number check happens
-// FIRST (before any other routing) and is the only gate into admin mode.
+// messenger.js — inbound message pipeline.
 import { col } from './db.js';
 import { isAdminNumber, normalizeNumber } from './config.js';
 import { handleSales, detectEscalation } from './flows/sales.js';
@@ -8,6 +7,30 @@ import { handleAdmin } from './admin.js';
 import pino from 'pino';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
+
+function blockedSet(settings) {
+  return new Set(
+    (settings.blockedNumbers || '')
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .map(normalizeNumber)
+  );
+}
+
+async function notifyWebhook(settings, payload) {
+  const url = settings.notifyWebhookUrl;
+  if (!url) return;
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    logger.error({ err: e.message }, 'webhook notify failed');
+  }
+}
 
 export async function handleInbound(sock, message, settings) {
   const key = message.key || {};
@@ -36,6 +59,17 @@ export async function handleInbound(sock, message, settings) {
     return;
   }
 
+  if (blockedSet(settings).has(senderNumber)) {
+    logger.info('blocked number %s — ignoring', senderNumber);
+    return;
+  }
+
+  if (settings.botPaused) {
+    logger.info('bot is paused (.stop) — ignoring customer %s', senderNumber);
+    await notifyWebhook(settings, { type: 'inbound_ignored_paused', sender: senderNumber, text: msg.text });
+    return;
+  }
+
   let conversation = await col('conversations').findOne({ _id: senderNumber });
   if (!conversation) {
     conversation = {
@@ -51,6 +85,8 @@ export async function handleInbound(sock, message, settings) {
   }
 
   const customerText = msg.text || (hasMedia ? '(media message)' : '');
+
+  await notifyWebhook(settings, { type: 'inbound', sender: senderNumber, text: customerText });
 
   if (isPaused(conversation)) {
     logger.info('auto-replies paused for %s', senderNumber);
