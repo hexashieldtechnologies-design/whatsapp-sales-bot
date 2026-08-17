@@ -6,7 +6,8 @@ const router = express.Router();
 
 export function makeQrRouter(getQrState) {
   router.get('/', async (req, res) => {
-    const pass = process.env.QR_PASSWORD;
+    // Protect with QR_PASSWORD; fallback to 'dev' if unset.
+    const pass = process.env.QR_PASSWORD || 'dev';
     if (pass) {
       const token = req.query.token || req.headers['x-qr-token'];
       if (token !== pass) {
