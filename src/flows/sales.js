@@ -40,6 +40,7 @@ export async function handleSales(conversation, messageText, settings) {
     catalog,
     profileNotes: conversation.profileNotes || {},
     rules,
+    language: conversation.language,
   });
 
   const messages = [{ role: 'system', content: system }];
