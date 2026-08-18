@@ -63,8 +63,10 @@ async function handleFromMeCommand(sock, key, message, settings) {
 }
 
 async function sendButtons(sock, remoteJid, text, footer, buttons) {
+  const payload = { text, footer, buttons: buttons.map((b) => ({ buttonId: b.id, buttonText: { displayText: b.label }, type: 1 })), headerType: 1 };
   try {
-    await sock.sendMessage(remoteJid, { text, footer, buttons, headerType: 1 });
+    await sock.sendMessage(remoteJid, payload);
+    logger.info('buttons sent to %s', remoteJid);
   } catch (e) {
     logger.warn({ err: e.message }, 'buttons send failed, fallback to text');
     await sock.sendMessage(remoteJid, { text });
@@ -74,28 +76,28 @@ async function sendButtons(sock, remoteJid, text, footer, buttons) {
 async function sendGreeting(sock, remoteJid, settings, lang) {
   const isHindi = lang === 'hindi';
   const text = isHindi
-    ? '🙏 नमस्ते! *' + (settings.businessName || 'हमारी दुकान') + '* में आपका स्वागत है!\n\nनीचे दिए बटन से चुनिए कि आपको क्या चाहिए 👇'
-    : '🙏 Namaste! Welcome to *' + (settings.businessName || 'our store') + '*!\n\nChoose what you need from the buttons below 👇';
-  await sendButtons(sock, remoteJid, text, isHindi ? 'बटन दबाइए या सीधे मैसेज कीजिए' : 'Tap a button or just type your message', [
-    { buttonId: 'id:catalog', buttonText: { displayText: isHindi ? '🛒 प्रोडक्ट्स देखें' : '🛒 Browse Products' }, type: 1 },
-    { buttonId: 'id:language', buttonText: { displayText: isHindi ? '🌐 भाषा चुनें' : '🌐 Select Language' }, type: 1 },
-    { buttonId: 'id:owner', buttonText: { displayText: isHindi ? '📞 Owner से बात' : '📞 Talk to Owner' }, type: 1 },
+    ? '🙏 नमस्ते! *' + (settings.businessName || 'हमारी दुकान') + '* में आपका स्वागत है!\n\nक्या चाहिए? नीचे बटन दबाइए 👇'
+    : '🙏 Namaste! Welcome to *' + (settings.businessName || 'our store') + '*!\n\nWhat do you need? Tap a button below 👇';
+  await sendButtons(sock, remoteJid, text, isHindi ? 'बटन दबाइए या सीधे मैसेज कीजिए' : 'Tap a button or just type', [
+    { id: 'id:catalog', label: isHindi ? '🛒 प्रोडक्ट्स देखें' : '🛒 Browse Products' },
+    { id: 'id:language', label: isHindi ? '🌐 भाषा चुनें' : '🌐 Select Language' },
+    { id: 'id:owner', label: isHindi ? '📞 Owner से बात' : '📞 Talk to Owner' },
   ]);
 }
 
 async function sendLanguageMenu(sock, remoteJid) {
   await sendButtons(sock, remoteJid, '🌐 Choose your language / अपनी भाषा चुनिए:', 'Select a language', [
-    { buttonId: 'lang:hindi', buttonText: { displayText: 'हिंदी' }, type: 1 },
-    { buttonId: 'lang:english', buttonText: { displayText: 'English' }, type: 1 },
+    { id: 'lang:hindi', label: 'हिंदी' },
+    { id: 'lang:english', label: 'English' },
   ]);
 }
 
 async function sendCatalogMenu(sock, remoteJid, lang) {
   const isHindi = lang === 'hindi';
   await sendButtons(sock, remoteJid, isHindi ? '🛒 आपको किस category का सामान चाहिए?' : '🛒 Which category do you want?', isHindi ? 'चुनिए' : 'Choose one', [
-    { buttonId: 'cat:laptop', buttonText: { displayText: '💻 Laptop/Computer' }, type: 1 },
-    { buttonId: 'cat:gaming', buttonText: { displayText: '🎮 Gaming PC' }, type: 1 },
-    { buttonId: 'cat:accessories', buttonText: { displayText: '🔌 Accessories' }, type: 1 },
+    { id: 'cat:laptop', label: '💻 Laptop/Computer' },
+    { id: 'cat:gaming', label: '🎮 Gaming PC' },
+    { id: 'cat:accessories', label: '🔌 Accessories' },
   ]);
 }
 
@@ -159,11 +161,11 @@ export async function handleInbound(sock, message, settings) {
     return;
   }
 
+  // If customer types a greeting (hi/hello), ALWAYS show the button menu.
   const lower = (text || '').toLowerCase();
-  if (conversation.isNewUser && /^(hi|hello|hey|namaste|hii|salaam|start|menu)/.test(lower)) {
+  if (/^(hi|hello|hey|namaste|hii|salaam|start|menu)$/.test(lower.trim())) {
     await sendGreeting(sock, remoteJid, settings, lang);
     await col('conversations').updateOne({ _id: senderNumber }, { $set: { isNewUser: false } });
-    conversation.isNewUser = false;
     return;
   }
 
