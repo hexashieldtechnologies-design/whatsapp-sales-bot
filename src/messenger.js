@@ -1,4 +1,4 @@
-// messenger.js — inbound message pipeline with interactive list/buttons.
+// messenger.js — inbound message pipeline with numbered text menu.
 import { col, saveSettings, getSettings } from './db.js';
 import { isAdminNumber, normalizeNumber } from './config.js';
 import { handleSales, detectEscalation } from './flows/sales.js';
@@ -62,64 +62,28 @@ async function handleFromMeCommand(sock, key, message, settings) {
   return false;
 }
 
-async function sendList(sock, remoteJid, bodyText, buttonLabel, sections) {
-  try {
-    await sock.sendMessage(remoteJid, {
-      text: bodyText,
-      footer: ' ',
-      title: buttonLabel,
-      buttonText: buttonLabel,
-      sections,
-    });
-    logger.info('list sent to %s', remoteJid);
-  } catch (e) {
-    logger.warn({ err: e.message }, 'list send failed, fallback to text');
-    const lines = sections.flatMap((s) => s.rows.map((r) => '- ' + r.title)).join('\n');
-    await sock.sendMessage(remoteJid, { text: bodyText + '\n\n' + lines });
-  }
+function greetingMenu(lang) {
+  return lang === 'hindi'
+    ? '*🧭 मुख्य मेनू*\nकृपया नीचे से कोई एक नंबर चुनिए 👇\n\n1️⃣ 🛒 प्रोडक्ट्स देखें\n2️⃣ 🌐 भाषा चुनें\n3️⃣ 📞 Owner से बात'
+    : '*🧭 Main Menu*\nPlease type a number from below 👇\n\n1️⃣ 🛒 Browse Products\n2️⃣ 🌐 Select Language\n3️⃣ 📞 Talk to Owner';
+}
+
+function languageMenu(lang) {
+  return '🌐 *Choose your language / अपनी भाषा चुनिए:*\n\n1️⃣ हिंदी\n2️⃣ English';
+}
+
+function catalogMenu(lang) {
+  return lang === 'hindi'
+    ? '*🛒 Categories*\nनंबर चुनिए 👇\n\n1️⃣ 💻 Laptop/Computer\n2️⃣ 🎮 Gaming PC\n3️⃣ 🔌 Accessories'
+    : '*🛒 Categories*\nType a number 👇\n\n1️⃣ 💻 Laptop/Computer\n2️⃣ 🎮 Gaming PC\n3️⃣ 🔌 Accessories';
 }
 
 async function sendGreeting(sock, remoteJid, settings, lang) {
   const isHindi = lang === 'hindi';
-  const body = isHindi
-    ? '🙏 नमस्ते! *' + (settings.businessName || 'हमारी दुकान') + '* में आपका स्वागत है!\n\nक्या चाहिए? नीचे \'मेनू\' बटन दबाइए 👇'
-    : '🙏 Namaste! Welcome to *' + (settings.businessName || 'our store') + '*!\n\nWhat do you need? Tap the \'Menu\' button below 👇';
-  await sendList(sock, remoteJid, body, isHindi ? '📋 मेनू' : '📋 Menu', [
-    {
-      title: isHindi ? 'मुख्य विकल्प' : 'Main options',
-      rows: [
-        { title: isHindi ? '🛒 प्रोडक्ट्स देखें' : '🛒 Browse Products', rowId: 'id:catalog' },
-        { title: isHindi ? '🌐 भाषा चुनें' : '🌐 Select Language', rowId: 'id:language' },
-        { title: isHindi ? '📞 Owner से बात' : '📞 Talk to Owner', rowId: 'id:owner' },
-      ],
-    },
-  ]);
-}
-
-async function sendLanguageMenu(sock, remoteJid) {
-  await sendList(sock, remoteJid, '🌐 अपनी भाषा चुनिए / Choose your language:', '🌐 Language', [
-    {
-      title: 'भाषा / Language',
-      rows: [
-        { title: 'हिंदी', rowId: 'lang:hindi' },
-        { title: 'English', rowId: 'lang:english' },
-      ],
-    },
-  ]);
-}
-
-async function sendCatalogMenu(sock, remoteJid, lang) {
-  const isHindi = lang === 'hindi';
-  await sendList(sock, remoteJid, isHindi ? '🛒 आपको किस category का सामान चाहिए?' : '🛒 Which category do you want?', '📋 Category', [
-    {
-      title: 'Categories',
-      rows: [
-        { title: '💻 Laptop/Computer', rowId: 'cat:laptop' },
-        { title: '🎮 Gaming PC', rowId: 'cat:gaming' },
-        { title: '🔌 Accessories', rowId: 'cat:accessories' },
-      ],
-    },
-  ]);
+  const head = isHindi
+    ? '🙏 नमस्ते! *' + (settings.businessName || 'हमारी दुकान') + '* में आपका स्वागत है! 🎉'
+    : '🙏 Namaste! Welcome to *' + (settings.businessName || 'our store') + '*! 🎉';
+  await sock.sendMessage(remoteJid, { text: head + '\n\n' + greetingMenu(lang) });
 }
 
 export async function handleInbound(sock, message, settings) {
@@ -142,10 +106,7 @@ export async function handleInbound(sock, message, settings) {
   let text = m.conversation || m.extendedTextMessage?.text || m.imageMessage?.caption || m.videoMessage?.caption || '';
   const buttonResp = m.buttonsResponseMessage;
   const listResp = m.listResponseMessage;
-  const selectedId = buttonResp?.selectedButtonId
-    || listResp?.singleSelectReply?.selectedRowId
-    || listResp?.title
-    || '';
+  const selectedId = buttonResp?.selectedButtonId || listResp?.singleSelectReply?.selectedRowId || '';
 
   const hasMedia = !!(m.imageMessage || m.audioMessage || m.videoMessage || m.ptvMessage);
   if (!text && !hasMedia && !selectedId) return;
@@ -179,16 +140,51 @@ export async function handleInbound(sock, message, settings) {
   }
 
   const lang = conversation.language;
+  const t = text.trim();
+  const lower = t.toLowerCase();
+  const menuState = conversation.menuState;
+  const num = /^[0-9]+$/.test(t) ? parseInt(t, 10) : null;
 
-  if (selectedId) {
-    await handleButtonSelection(sock, remoteJid, senderNumber, selectedId, conversation, settings);
-    return;
+  if (menuState === 'language') {
+    if (num === 1) {
+      await col('conversations').updateOne({ _id: senderNumber }, { $set: { language: 'hindi', menuState: 'catalog' } });
+      await sock.sendMessage(remoteJid, { text: '✅ आपने हिंदी चुनी। अब मैं आपसे हिंदी में ही बात करूँगा। 🙏\n\n' + catalogMenu('hindi') });
+      return;
+    }
+    if (num === 2) {
+      await col('conversations').updateOne({ _id: senderNumber }, { $set: { language: 'english', menuState: 'catalog' } });
+      await sock.sendMessage(remoteJid, { text: '✅ You chose English. I will chat with you in English. 🙏\n\n' + catalogMenu('english') });
+      return;
+    }
   }
 
-  const lower = (text || '').toLowerCase();
-  if (/^(hi|hello|hey|namaste|hii|salaam|start|menu)$/.test(lower.trim())) {
+  if (menuState === 'catalog') {
+    if (num === 1) return await onCategory(sock, remoteJid, senderNumber, 'laptop', conversation);
+    if (num === 2) return await onCategory(sock, remoteJid, senderNumber, 'gaming', conversation);
+    if (num === 3) return await onCategory(sock, remoteJid, senderNumber, 'accessories', conversation);
+  }
+
+  if (menuState === 'main' || menuState == null) {
+    if (num === 1) {
+      await col('conversations').updateOne({ _id: senderNumber }, { $set: { menuState: 'catalog' } });
+      await sock.sendMessage(remoteJid, { text: catalogMenu(conversation.language) });
+      return;
+    }
+    if (num === 2) {
+      await col('conversations').updateOne({ _id: senderNumber }, { $set: { menuState: 'language' } });
+      await sock.sendMessage(remoteJid, { text: languageMenu(conversation.language) });
+      return;
+    }
+    if (num === 3) {
+      const reply = await handleEscalation(sock, conversation, senderNumber, 'owner se baat karni hai', settings);
+      await sock.sendMessage(remoteJid, { text: reply });
+      return;
+    }
+  }
+
+  if (/^(hi|hello|hey|namaste|hii|salaam|start|menu)$/.test(lower)) {
+    await col('conversations').updateOne({ _id: senderNumber }, { $set: { menuState: 'main', isNewUser: false } });
     await sendGreeting(sock, remoteJid, settings, lang);
-    await col('conversations').updateOne({ _id: senderNumber }, { $set: { isNewUser: false } });
     return;
   }
 
@@ -203,7 +199,6 @@ export async function handleInbound(sock, message, settings) {
   } else if (conversation.isNewUser) {
     reply = await handleSales(conversation, customerText || 'hi', settings);
     await col('conversations').updateOne({ _id: senderNumber }, { $set: { isNewUser: false } });
-    conversation.isNewUser = false;
   } else {
     reply = await handleSales(conversation, customerText, settings);
   }
@@ -218,43 +213,15 @@ export async function handleInbound(sock, message, settings) {
   await sock.sendMessage(remoteJid, { text: reply });
 }
 
-async function handleButtonSelection(sock, remoteJid, senderNumber, id, conversation, settings) {
-  if (id === 'lang:hindi' || id === 'lang:english') {
-    const lang = id === 'lang:hindi' ? 'hindi' : 'english';
-    await col('conversations').updateOne({ _id: senderNumber }, { $set: { language: lang } });
-    conversation.language = lang;
-    const msg = lang === 'hindi'
-      ? '✅ आपने हिंदी चुनी। अब मैं आपसे हिंदी में ही बात करूँगा। 🙏\n\nक्या चाहिए? नीचे से चुनिए या सीधे बताइए।'
-      : '✅ You chose English. I will chat with you in English. 🙏\n\nWhat do you need? Choose below or just tell me.';
-    await sock.sendMessage(remoteJid, { text: msg });
-    await sendCatalogMenu(sock, remoteJid, lang);
-    return;
-  }
-  if (id === 'id:language') {
-    await sendLanguageMenu(sock, remoteJid);
-    return;
-  }
-  if (id === 'id:catalog') {
-    await sendCatalogMenu(sock, remoteJid, conversation.language);
-    return;
-  }
-  if (id === 'id:owner') {
-    const reply = await handleEscalation(sock, conversation, senderNumber, 'owner se baat karni hai', settings);
-    await sock.sendMessage(remoteJid, { text: reply });
-    return;
-  }
-  if (id.startsWith('cat:')) {
-    const cat = id.split(':')[1];
-    const lang = conversation.language;
-    const map = { laptop: '💻 Laptop/Computer', gaming: '🎮 Gaming PC', accessories: '🔌 Accessories' };
-    const catName = map[cat] || cat;
-    const reply = lang === 'hindi'
-      ? 'बढ़िया! आपको *' + catName + '* चाहिए। 🙌\n\nबताइए — किस काम के लिए चाहिए (gaming, study, office)? और budget कितना रख रहे हैं?'
-      : 'Great! You want *' + catName + '*. 🙌\n\nTell me — what will you use it for, and what is your budget?';
-    await sock.sendMessage(remoteJid, { text: reply });
-    await col('conversations').updateOne({ _id: senderNumber }, { $set: { 'profileNotes.useCase': cat } });
-    return;
-  }
+async function onCategory(sock, remoteJid, senderNumber, cat, conversation) {
+  const lang = conversation.language;
+  const map = { laptop: 'Laptop/Computer', gaming: 'Gaming PC', accessories: 'Accessories' };
+  const catName = map[cat] || cat;
+  const reply = lang === 'hindi'
+    ? 'बढ़िया! आपको *' + catName + '* चाहिए। 🙌\n\nबताइए — किस काम के लिए चाहिए (gaming, study, office)? और budget कितना रख रहे हैं?'
+    : 'Great! You want *' + catName + '*. 🙌\n\nTell me — what will you use it for (gaming, study, office)? And what is your budget?';
+  await sock.sendMessage(remoteJid, { text: reply });
+  await col('conversations').updateOne({ _id: senderNumber }, { $set: { menuState: null, 'profileNotes.useCase': cat } });
 }
 
 export default { handleInbound };
