@@ -1,6 +1,5 @@
-// escalation.js — forward the customer to the human owner. Asks for the
-// customer's number (if they want a call/contact) and sends a summary incl.
-// their number + full context to the owner, then pauses auto-replies.
+// escalation.js — forward the customer to the human owner. Sends a rich summary
+// (name + auto-detected WhatsApp number + wa.me link + full context) to the owner.
 import { col } from '../db.js';
 import pino from 'pino';
 
@@ -11,12 +10,21 @@ export async function handleEscalation(sock, conversation, conversationKey, late
   const ownerNumber = settings.ownerWhatsappNumber;
   const businessName = settings.businessName || 'our store';
 
-  const recent = (conversation.messages || []).slice(-8).map((m) => `${m.role === 'assistant' ? 'Bot' : 'Customer'}: ${m.content}`).join('\n');
+  const recent = (conversation.messages || []).slice(-8)
+    .map((m) => `${m.role === 'assistant' ? 'Bot' : 'Customer'}: ${m.content}`)
+    .join('\n');
 
+  // Auto-detected WhatsApp number (from the chat JID). Always available.
+  const autoNumber = String(conversationKey || '').replace(/@s\.whatsapp\.net$/, '').replace(/@s\.whatsapp\.net$/, '');
+  const customerName = conversation.customerName || '(name un-known)';
+
+  // A number the customer may have typed in their message (optional second number).
   const typedNumber = (latestText || '').match(/[6-9]\d{9}|(?:\+?91)?[6-9]\d{9}/);
-  const customerNumber = typedNumber ? typedNumber[0] : conversationKey.replace(/@s\..+$/, '');
+  const extraNumber = typedNumber ? typedNumber[0].replace(/\+?91/, '') : '';
 
-  const summary = `🔔 Customer wants to talk to you\n\nBusiness: ${businessName}\nCustomer number: ${customerNumber}\nWhatsApp JID: ${conversationKey}\n\nRecent conversation:\n${recent || '(none)'}\n\nLatest message:\n"${latestText}"`;
+  const waLink = autoNumber ? `https://wa.me/${autoNumber}` : '';
+
+  const summary = `🔔 Customer wants to talk to you\n\nBusiness: ${businessName}\nCustomer: ${customerName}\nWhatsApp number: ${autoNumber}${extraNumber && extraNumber !== autoNumber ? `\nExtra number (typed): ${extraNumber}` : ''}\nChat link: ${waLink}\n\nRecent conversation:\n${recent || '(none)'}\n\nLatest message:\n"${latestText}"`;
 
   if (ownerNumber) {
     try {
@@ -34,7 +42,7 @@ export async function handleEscalation(sock, conversation, conversationKey, late
       $set: {
         escalatedToOwner: true,
         escalatedAt: new Date(),
-        customerNumber,
+        customerNumber: autoNumber,
         autoReplyPausedUntil: new Date(Date.now() + PAUSE_MS),
       },
     }
