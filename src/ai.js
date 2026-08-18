@@ -3,7 +3,10 @@ import pino from 'pino';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
-const FALLBACK_REPLY = 'Ek second, thoda technical issue aa raha hai. Main abhi dobara try karta hoon, aap bas thoda ruk jaiye. 🙏';
+const FALLBACK_REPLY =
+  'Ek second, thoda technical issue aa raha hai. Main abhi dobara try karta hoon, aap bas thoda ruk jaiye. 🙏';
+
+const REQUEST_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || 15000);
 
 function toList(v) {
   if (Array.isArray(v)) return v.map((x) => String(x).trim()).filter(Boolean);
@@ -22,6 +25,23 @@ function endpointFor(provider) {
   return 'https://api.groq.com/openai/v1/chat/completions';
 }
 
+async function fetchWithTimeout(url, options, ms) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Default (fast) fallback models per provider, ordered fastest-first.
+const DEFAULT_MODELS = {
+  openrouter: ['nvidia/nemotron-3-nano-30b-a3b:free', 'google/gemma-4-26b-a4b-it:free', 'google/gemma-4-31b-it:free'],
+  groq: ['openai/gpt-oss-20b'],
+  gemini: ['gemini-2.0-flash'],
+};
+
 function buildChain(cfg) {
   const chain = [];
   const active = (cfg.aiProvider || cfg.provider || 'openrouter').toLowerCase();
@@ -31,8 +51,8 @@ function buildChain(cfg) {
     if (!keys.length) continue;
     let models = toList(cfg[p + 'Model'] || cfg[p + 'Models']);
     if (!models.length && p === active && cfg.model) models = toList(cfg.model);
-    const ml = models.length ? models : (p === 'openrouter' ? ['google/gemma-4-31b-it:free'] : p === 'groq' ? ['openai/gpt-oss-20b'] : ['gemini-2.0-flash']);
-    for (const key of keys) for (const model of ml) chain.push({ provider: p, apiKey: key, model: model });
+    const ml = models.length ? models : DEFAULT_MODELS[p] || [];
+    for (const key of keys) for (const model of ml) chain.push({ provider: p, apiKey: key, model });
   }
   return chain;
 }
@@ -57,11 +77,11 @@ async function callChat(provider, apiKey, model, messages, opts) {
   }
   const body = { model, messages, temperature: opts && opts.temperature != null ? opts.temperature : 0.7, max_tokens: opts && opts.maxTokens ? opts.maxTokens : 800 };
   if (opts && opts.json) body.response_format = { type: 'json_object' };
-  const res = await fetch(endpointFor(provider), {
+  const res = await fetchWithTimeout(endpointFor(provider), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKey },
     body: JSON.stringify(body),
-  });
+  }, REQUEST_TIMEOUT_MS);
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
     throw new Error('provider ' + res.status + ': ' + txt.slice(0, 200));
@@ -122,7 +142,7 @@ export async function describeImage(imageDataUrl, instruction, cfg) {
         const result = await gm.generateContent([{ inlineData: { data: base64, mimeType: mime } }, { text: instruction }]);
         return cleanOutput(result.response.text());
       }
-      const res = await fetch(endpointFor(entry.provider), {
+      const res = await fetchWithTimeout(endpointFor(entry.provider), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + entry.apiKey },
         body: JSON.stringify({
@@ -131,7 +151,7 @@ export async function describeImage(imageDataUrl, instruction, cfg) {
           temperature: 0.1,
           max_tokens: 1000,
         }),
-      });
+      }, REQUEST_TIMEOUT_MS);
       if (!res.ok) throw new Error('vision provider ' + res.status);
       const data = await res.json();
       return cleanOutput(data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content || '');
