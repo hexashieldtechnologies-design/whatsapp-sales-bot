@@ -39,9 +39,6 @@ async function notifyWebhook(settings, payload) {
   }
 }
 
-// Handles control commands the OWNER sends FROM the bot's own account directly
-// in a customer's chat. e.g. open customer X's chat (as the bot), type ".stop"
-// -> customer X is paused. ".start" -> resumed. Returns true if handled.
 async function handleFromMeCommand(sock, key, message, settings) {
   const text = (message?.conversation || message?.extendedTextMessage?.text || '').trim();
   const lower = text.toLowerCase();
@@ -49,8 +46,8 @@ async function handleFromMeCommand(sock, key, message, settings) {
   if (!remoteJid || remoteJid.endsWith('@g.us') || remoteJid.endsWith('@broadcast')) return false;
 
   const customerNumber = normalizeNumber(remoteJid);
-  const isStop = /^[\.\/]?stop\b/.test(lower) && !/botanist|stopover/.test(lower);
-  const isStart = /^[\.\/]?start\b/.test(lower) && !/starter|restart/.test(lower);
+  const isStop = /^[.\/]?stop\b/.test(lower) && !/botanist|stopover/.test(lower);
+  const isStart = /^[.\/]?start\b/.test(lower) && !/starter|restart/.test(lower);
 
   if (isStop) {
     const s = await getSettings();
@@ -76,10 +73,9 @@ async function handleFromMeCommand(sock, key, message, settings) {
 export async function handleInbound(sock, message, settings) {
   const key = message.key || {};
 
-  // ---- owner sent a command FROM the bot's own account ----
   if (key.fromMe) {
     await handleFromMeCommand(sock, key, message.message, settings);
-    return; // never reply to our own messages otherwise
+    return;
   }
 
   const remoteJid = key.remoteJid;
@@ -100,6 +96,7 @@ export async function handleInbound(sock, message, settings) {
   }
 
   const senderNumber = normalizeNumber(remoteJid);
+  const pushName = message.pushName || '';
 
   const msg = {
     text: message.message?.conversation
@@ -150,9 +147,15 @@ export async function handleInbound(sock, message, settings) {
     await col('conversations').insertOne(conversation);
   }
 
+  // Capture WhatsApp profile name automatically on every message.
+  if (pushName && (!conversation.customerName || conversation.customerName !== pushName)) {
+    await col('conversations').updateOne({ _id: senderNumber }, { $set: { customerName: pushName } });
+    conversation.customerName = pushName;
+  }
+
   const customerText = msg.text || (hasMedia ? '(media message)' : '');
 
-  await notifyWebhook(settings, { type: 'inbound', sender: senderNumber, text: customerText });
+  await notifyWebhook(settings, { type: 'inbound', sender: senderNumber, name: pushName, text: customerText });
 
   if (isPaused(conversation)) {
     logger.info('auto-replies paused for %s', senderNumber);
