@@ -13,6 +13,9 @@ const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Sticker / GIF asset map. Each key matches an emotion tag used in the
+// system prompt (e.g. [STICKER:laugh], [GIF:thumbsup]). Values are
+// paths to packaged webp (stickers) and gif (animations) files.
 const STICKERS = {
   laugh: path.join(__dirname, 'assets', 'stickers', 'laugh.webp'),
   love: path.join(__dirname, 'assets', 'stickers', 'love.webp'),
@@ -49,6 +52,9 @@ function numSet(csv) {
   return new Set(String(csv || '').split(',').map((x) => x.trim()).filter(Boolean).map(normalizeNumber));
 }
 
+// Extract a single trailing sticker/GIF tag like "[STICKER:laugh]" or
+// "[GIF:thumbsup]" from a reply. Returns { text, media } where media is
+// { kind: 'sticker'|'gif', emotion } or null.
 const TAG_RE = /\[(STICKER|GIF):([a-z0-9]+)\]/i;
 function extractMediaTag(replyText) {
   if (!replyText) return { text: replyText, media: null };
@@ -61,14 +67,19 @@ function extractMediaTag(replyText) {
   return { text, media: { kind, emotion } };
 }
 
+// Minimal human handoff — forward a short summary to the owner when the user
+// explicitly asks for a human/owner/support person.
 async function handleHumanHandoff(sock, conversation, conversationKey, latestText, settings) {
   const ownerNumber = settings.ownerWhatsappNumber;
   const autoNumber = String(conversationKey || '').replace(/@s\.whatsapp\.net$/, '');
   const customerName = conversation.customerName || 'unknown';
+
   const recent = (conversation.messages || []).slice(-8)
     .map((m) => `${m.role === 'assistant' ? 'Bot' : 'Customer'}: ${m.content}`)
     .join('\n');
+
   const summary = `🔔 Customer wants to talk to a human\n\nCustomer: ${customerName}\nWhatsApp: ${autoNumber}\nChat link: https://wa.me/${autoNumber}\n\nRecent conversation:\n${recent || '(none)'}\n\nLatest message:\n"${latestText}"`;
+
   if (ownerNumber) {
     try {
       await sock.sendMessage(`${ownerNumber}@s.whatsapp.net`, { text: summary });
@@ -78,9 +89,11 @@ async function handleHumanHandoff(sock, conversation, conversationKey, latestTex
   } else {
     logger.warn('no ownerWhatsappNumber set — cannot forward handoff');
   }
+
   return 'Main aapki baat aage pahuncha raha hoon. Koi human aapse jald hi contact karenge. 🙏';
 }
 
+// Returns true when the user clearly asks to talk to a human / real person.
 function wantsHuman(text) {
   const t = (text || '').toLowerCase();
   const patterns = [
@@ -119,6 +132,8 @@ async function handleFromMeCommand(sock, key, message) {
   return false;
 }
 
+// Send a text reply and (optionally) an attached sticker/GIF media message.
+// Returns the final plain-text reply that should be stored in history.
 async function sendReply(sock, remoteJid, rawReply) {
   const { text, media } = extractMediaTag(rawReply);
   try {
@@ -126,79 +141,109 @@ async function sendReply(sock, remoteJid, rawReply) {
   } catch (e) {
     logger.error({ err: e.message }, 'failed to send text reply');
   }
+
   if (media) {
     try {
       if (media.kind === 'sticker') {
         const p = STICKERS[media.emotion];
-        if (p) await sock.sendMessage(remoteJid, { sticker: { url: p } });
-        else logger.warn({ emotion: media.emotion }, 'unknown sticker emotion — skipped');
+        if (p) {
+          await sock.sendMessage(remoteJid, { sticker: { url: p } });
+        } else {
+          logger.warn({ emotion: media.emotion }, 'unknown sticker emotion — skipped');
+        }
       } else if (media.kind === 'gif') {
         const p = GIFS[media.emotion];
-        if (p) await sock.sendMessage(remoteJid, { video: { url: p }, gifPlayback: true });
-        else logger.warn({ emotion: media.emotion }, 'unknown gif emotion — skipped');
+        if (p) {
+          await sock.sendMessage(remoteJid, { video: { url: p }, gifPlayback: true });
+        } else {
+          logger.warn({ emotion: media.emotion }, 'unknown gif emotion — skipped');
+        }
       }
     } catch (e) {
       logger.error({ err: e.message, kind: media.kind, emotion: media.emotion }, 'failed to send sticker/gif');
     }
   }
+
   return text || rawReply;
 }
 
 export async function handleInbound(sock, message, settings) {
   const key = message.key || {};
+
   if (key.fromMe) {
     await handleFromMeCommand(sock, key, message.message);
     return;
   }
+
   const remoteJid = key.remoteJid;
   if (!remoteJid) return;
   if (remoteJid.endsWith('@g.us') || remoteJid.endsWith('@broadcast') || remoteJid.endsWith('@newsletter') || key.participant) return;
   if (hasSeen(key.id)) return;
+
   const senderNumber = normalizeNumber(remoteJid);
   const pushName = message.pushName || '';
+
   const m = message.message || {};
   let text = m.conversation || m.extendedTextMessage?.text || m.imageMessage?.caption || m.videoMessage?.caption || '';
   const buttonResp = m.buttonsResponseMessage;
   const listResp = m.listResponseMessage;
   const selectedId = buttonResp?.selectedButtonId || listResp?.singleSelectReply?.selectedRowId || '';
+
   const hasMedia = !!(m.imageMessage || m.audioMessage || m.videoMessage || m.ptvMessage);
   if (!text && !hasMedia && !selectedId) return;
+
+  // Owner/admin gets full control; others get the natural assistant.
   if (isAdminNumber(senderNumber, settings)) {
     const reply = await handleAdmin(sock, remoteJid, senderNumber, m, settings);
     if (reply) await sock.sendMessage(remoteJid, { text: reply });
     return;
   }
+
   if (numSet(settings.blockedNumbers).has(senderNumber)) return;
   if (numSet(settings.pausedNumbers).has(senderNumber)) return;
   if (settings.botPaused) return;
+
   let conversation = await col('conversations').findOne({ _id: senderNumber });
   const isNewUser = !conversation;
   if (!conversation) {
-    conversation = { _id: senderNumber, messages: [], lastActive: new Date(), createdAt: new Date() };
+    conversation = {
+      _id: senderNumber,
+      messages: [],
+      lastActive: new Date(),
+      createdAt: new Date(),
+    };
     await col('conversations').insertOne(conversation);
   }
+
   if (pushName && conversation.customerName !== pushName) {
     await col('conversations').updateOne({ _id: senderNumber }, { $set: { customerName: pushName } });
     conversation.customerName = pushName;
   }
+
   const t = text.trim();
   const customerText = t || (hasMedia ? '(media message)' : '');
+
   let reply;
   if (customerText && wantsHuman(customerText)) {
     reply = await handleHumanHandoff(sock, conversation, senderNumber, customerText, settings);
   } else {
     reply = await chat(senderNumber, customerText, conversation, settings, isNewUser);
   }
+
   const now = new Date();
   const updates = [];
   if (customerText) updates.push({ role: 'user', content: customerText, timestamp: now });
+
+  // Send the reply (text + optional sticker/GIF), then store the clean text.
   const cleanReply = await sendReply(sock, remoteJid, reply);
   updates.push({ role: 'assistant', content: cleanReply, timestamp: now });
+
   let messages = [...(conversation.messages || []), ...updates];
   if (messages.length > 30) messages = messages.slice(-30);
   await col('conversations').updateOne({ _id: senderNumber }, { $set: { messages, lastActive: now } });
 }
 
+// Natural AI chat with per-user conversation history.
 async function chat(key, messageText, conversation, settings, isNewUser) {
   const system = buildSystemPrompt(isNewUser);
   const messages = [{ role: 'system', content: system }];
