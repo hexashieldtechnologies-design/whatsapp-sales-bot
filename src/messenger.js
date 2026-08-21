@@ -128,6 +128,7 @@ export async function handleInbound(sock, message, settings) {
   if (settings.botPaused) return;
 
   let conversation = await col('conversations').findOne({ _id: senderNumber });
+  const isNewUser = !conversation;
   if (!conversation) {
     conversation = {
       _id: senderNumber,
@@ -150,7 +151,7 @@ export async function handleInbound(sock, message, settings) {
   if (customerText && wantsHuman(customerText)) {
     reply = await handleHumanHandoff(sock, conversation, senderNumber, customerText, settings);
   } else {
-    reply = await chat(senderNumber, customerText, conversation, settings);
+    reply = await chat(senderNumber, customerText, conversation, settings, isNewUser);
   }
 
   const now = new Date();
@@ -164,8 +165,8 @@ export async function handleInbound(sock, message, settings) {
 }
 
 // Natural AI chat with per-user conversation history.
-async function chat(key, messageText, conversation, settings) {
-  const system = buildSystemPrompt();
+async function chat(key, messageText, conversation, settings, isNewUser) {
+  const system = buildSystemPrompt(isNewUser);
   const messages = [{ role: 'system', content: system }];
   const history = (conversation?.messages || []).slice(-20);
   for (const h of history) {
