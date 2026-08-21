@@ -2,19 +2,16 @@
 // source of truth; process.env values are used only as fallback/defaults.
 import { getSettings } from './db.js';
 
-// Normalize a phone number to a bare international string (digits only, strip
-// any leading +). Used for both admin matching and conversation keys.
+// Normalize a phone number to a bare international string (digits only).
 export function normalizeNumber(input) {
   if (!input) return '';
-  let n = String(input).replace(/[^\d]/g, '');
-  return n;
+  return String(input).replace(/[^\d]/g, '');
 }
 
 export function adminNumbers(settings) {
-  const s = settings;
   const list = [];
-  const raw = (s.adminNumbers || '').split(',').map((x) => x.trim()).filter(Boolean);
-  const owner = s.ownerWhatsappNumber;
+  const raw = (settings.adminNumbers || '').split(',').map((x) => x.trim()).filter(Boolean);
+  const owner = settings.ownerWhatsappNumber;
   if (owner) list.push(owner);
   for (const r of raw) list.push(r);
   const seen = new Set();
@@ -29,8 +26,7 @@ export function isAdminNumber(rawNumber, settings) {
   return adminNumbers(settings).includes(norm);
 }
 
-// Split a key field into multiple keys (comma OR newline separated), trimming
-// and deduping. Lets the owner paste several keys for automatic fallback.
+// Split a key field into multiple keys (comma OR newline separated).
 export function splitKeys(raw) {
   if (Array.isArray(raw)) return raw.map((x) => String(x).trim()).filter(Boolean);
   return String(raw || '')
@@ -39,10 +35,9 @@ export function splitKeys(raw) {
     .filter(Boolean);
 }
 
-// Resolve the active AI config for the given provider setting. apiKeys is a
-// list (primary first) so callers can try each in turn as a fallback.
+// Resolve the active AI config for the given provider setting.
 export function aiConfig(settings) {
-  const provider = (settings.aiProvider || 'groq').toLowerCase();
+  const provider = (settings.aiProvider || 'openrouter').toLowerCase();
   switch (provider) {
     case 'openrouter':
       return {
@@ -65,7 +60,6 @@ export function aiConfig(settings) {
         apiKeys: splitKeys(settings.groqApiKey),
         apiKey: splitKeys(settings.groqApiKey)[0] || '',
         model: settings.groqModel,
-        visionModel: settings.groqVisionModel,
       };
   }
 }

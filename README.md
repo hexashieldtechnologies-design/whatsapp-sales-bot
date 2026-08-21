@@ -1,17 +1,8 @@
-# WhatsApp AI Sales Bot
+# WhatsApp AI Assistant
 
-A WhatsApp-based AI sales assistant built with **Node.js + Baileys + Express + MongoDB**, deployed on **Railway**.
+A natural, human-like, multilingual WhatsApp chatbot built with **Node.js + Baileys + Express + MongoDB**, deployed on **Railway**.
 
-Deploy it, scan a QR to link a WhatsApp number, and every customer who messages that number is handled by an AI agent that:
-
-- talks naturally in **Hinglish** (Hindi-English mix)
-- pulls **live product data** from your external product API
-- **remembers each customer** separately (own history + profile notes)
-- asks discovery questions before recommending
-- **escalates to you (the owner)** on request with full context
-- never uses abusive language and never fabricates claims
-
-It also has a full **admin control layer** — you manage the bot entirely by messaging it (add products, broadcast to customers, set live rules), no dashboard needed.
+The bot replies in the same language and script the user writes in — Hindi (Devanagari or Roman), English, Telugu (script or Roman), and natural code-mixed forms. It keeps per-user conversation memory and escalates to a human only when the user explicitly asks.
 
 ---
 
@@ -19,25 +10,23 @@ It also has a full **admin control layer** — you manage the bot entirely by me
 
 - A [Railway](https://railway.app) account
 - A MongoDB Atlas cluster (free M0 tier is fine)
-- API key for one AI provider: **Groq** (default), **Google AI Studio (Gemini)**, or **OpenRouter**
+- API key for one AI provider: **OpenRouter** (default), **Groq**, or **Google AI Studio (Gemini)**
 
 ---
 
 ## 2. Deploy to Railway
 
-1. Push this repo to GitHub (or connect your local folder).
-2. In Railway, **New Project → Deploy from GitHub repo** (or use the Railway CLI).
-3. Add these **environment variables**:
+1. Push this repo to GitHub.
+2. In Railway: **New Project → Deploy from GitHub repo**.
+3. Add environment variables:
 
    | Variable | Value |
    |---|---|
    | `MONGO_URI` | your Atlas connection string |
-   | `PORT` | `3000` (Railway may set this automatically) |
-   | `QR_PASSWORD` | any secret token, e.g. `supersecret123` |
-   | `AI_PROVIDER` | `groq` (optional — overridden by `/settings`) |
-   | `IMAGE_HOST` | optional: `cloudinary` (leave blank to skip images) |
-
-   > `MONGO_URI` looks like: `mongodb+srv://<user>:<pass>@cluster0.xxx.mongodb.net/?appName=Cluster0`
+   | `PORT` | `3000` (Railway may set this) |
+   | `ADMIN_PASSWORD` | panel password (default `dev`) |
+   | `QR_PASSWORD` | optional secret for the `/qr` page |
+   | `AI_PROVIDER` | `openrouter` (optional — overridden by the panel) |
 
 4. Railway auto-detects the `Dockerfile` and deploys.
 
@@ -45,62 +34,33 @@ It also has a full **admin control layer** — you manage the bot entirely by me
 
 ## 3. Link your WhatsApp number
 
-1. Open `https://<your-railway-url>/qr?token=<QR_PASSWORD>`.
-2. Scan the QR with **WhatsApp → Settings → Linked devices → Link a device**.
-3. When connected, the page shows **"✅ Connected as +91…"**.
-
-The session is stored in MongoDB, so redeploys/restarts do **not** require re-scanning.
+1. Open your Railway URL (`/` admin panel, password-protected) to see the QR.
+2. In WhatsApp: **Settings → Linked devices → Link a device**, and scan.
+3. The session is stored in MongoDB, so redeploys/restarts do **not** require re-scanning. Pair with a phone number (no QR) is also supported from the panel.
 
 ---
 
 ## 4. Configure the bot
 
-Open `https://<your-railway-url>/settings` and fill in:
+From the admin panel, set:
 
-- Shop / business name
-- Owner WhatsApp number (where escalations go)
-- Admin numbers (comma-separated)
-- Product API URL (GET → JSON array)
-- AI provider + API key + model
-
-Everything is saved to MongoDB and takes effect immediately — no redeploy.
+- **Owner WhatsApp number** — where human-handoff summaries go.
+- **Admin numbers** — numbers that can control the bot via chat.
+- **AI provider + API key + model** — OpenRouter / Groq / Gemini.
+- **Owner training** (optional) — extra standing instructions.
 
 ---
 
-## 5. Admin control (messing the bot)
+## 5. Language behaviour
 
-Message the bot from an **admin number**. Type `menu` to see options:
+The bot replies in the language and script the user writes:
 
-- **Add product** — via text, photo, or voice note.
-- **Broadcast** — message all recent customers (throttled).
-- **Set a rule** — injected into every future customer reply.
+| User writes | Bot replies |
+|---|---|
+| `Hello, how are you?` | English |
+| `नमस्ते, आप कैसे हैं?` | Hindi (Devanagari) |
+| `Bhai kya kar rahe ho?` | Roman Hindi / Hinglish |
+| `మీరు ఎలా ఉన్నారు?` | Telugu |
+| `Nuvvu ela unnavu?` | Roman Telugu |
 
-Every destructive action is confirmed before it happens.
-
----
-
-## 6. Project structure
-
-```
-src/
-├── index.js            # entry point
-├── config.js           # settings + admin-number helpers
-├── db.js               # Mongo connection + settings
-├── authState.js        # Mongo-backed session persistence
-├── ai.js               # provider-agnostic AI (text + vision + JSON)
-├── productCatalog.js   # catalog fetch + cache + merge
-├── media.js            # voice transcription + image hosting
-├── messenger.js        # inbound pipeline
-├── admin.js            # admin dispatcher
-├── prompts.js          # system prompt + guardrails
-├── flows/              # onboarding, sales, escalation, addProduct, broadcast, rules
-└── routes/             # qr, settings, health
-```
-
----
-
-## 7. Safety notes
-
-- **WhatsApp ban risk**: broadcasts are throttled (2–5s delays) and target only recently-active customers.
-- **Admin mode gated solely by phone number.**
-- **Secrets**: put real keys in `.env` (gitignored). Never commit `.env`.
+A bare `Hi` / `Hello` is answered with a short "who are you?" instead of a long generic intro.

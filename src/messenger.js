@@ -1,9 +1,10 @@
-// messenger.js — inbound message pipeline (natural, menu-free chat).
+// messenger.js — inbound message pipeline for a natural, menu-free,
+// multilingual human-like assistant.
 import { col, saveSettings, getSettings } from './db.js';
 import { isAdminNumber, normalizeNumber } from './config.js';
-import { handleSales, detectEscalation } from './flows/sales.js';
-import { handleEscalation, isPaused } from './flows/escalation.js';
 import { handleAdmin } from './admin.js';
+import { getAIReply } from './ai.js';
+import { buildSystemPrompt } from './prompts.js';
 import pino from 'pino';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
@@ -25,24 +26,52 @@ function numSet(csv) {
   return new Set(String(csv || '').split(',').map((x) => x.trim()).filter(Boolean).map(normalizeNumber));
 }
 
-async function notifyWebhook(settings, payload) {
-  const url = settings.notifyWebhookUrl;
-  if (!url) return;
-  try {
-    await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-  } catch (e) {
-    logger.error({ err: e.message }, 'webhook notify failed');
+// Minimal human handoff — forward a short summary to the owner when the user
+// explicitly asks for a human/owner/support person.
+async function handleHumanHandoff(sock, conversation, conversationKey, latestText, settings) {
+  const ownerNumber = settings.ownerWhatsappNumber;
+  const autoNumber = String(conversationKey || '').replace(/@s\.whatsapp\.net$/, '');
+  const customerName = conversation.customerName || 'unknown';
+
+  const recent = (conversation.messages || []).slice(-8)
+    .map((m) => `${m.role === 'assistant' ? 'Bot' : 'Customer'}: ${m.content}`)
+    .join('\n');
+
+  const summary = `🔔 Customer wants to talk to a human\n\nCustomer: ${customerName}\nWhatsApp: ${autoNumber}\nChat link: https://wa.me/${autoNumber}\n\nRecent conversation:\n${recent || '(none)'}\n\nLatest message:\n"${latestText}"`;
+
+  if (ownerNumber) {
+    try {
+      await sock.sendMessage(`${ownerNumber}@s.whatsapp.net`, { text: summary });
+    } catch (e) {
+      logger.error({ err: e.message }, 'failed to notify owner');
+    }
+  } else {
+    logger.warn('no ownerWhatsappNumber set — cannot forward handoff');
   }
+
+  return 'Main aapki baat aage pahuncha raha hoon. Koi human aapse jald hi contact karenge. 🙏';
 }
 
-async function handleFromMeCommand(sock, key, message, settings) {
+// Returns true when the user clearly asks to talk to a human / real person.
+function wantsHuman(text) {
+  const t = (text || '').toLowerCase();
+  const patterns = [
+    /(baat|talk|call|speak|contact|connect|milw|milana|connect)\s+(karni|karo|karwa|krwa|krana|karana|mujhe|hogi?|hai|do|de|dijiye|chahiye)\s+(owner|human|insaan|vyakti|person|team|sir|madam|boss|admin|aap|agent)/,
+    /(owner|human|insaan|vyakti|person|manager|sir|madam|boss|admin|agent)\s+(se|ko|ke|to)\s+(baat|mil|connect|call|talk)/,
+    /(real person|real insaan|asli insaan|kisi insaan|human agent|support team|support person)/,
+    /insaan se baat|human se baat|owner se baat|customer care|customer service/,
+  ];
+  return patterns.some((re) => re.test(t));
+}
+
+async function handleFromMeCommand(sock, key, message) {
   const text = (message?.conversation || message?.extendedTextMessage?.text || '').trim();
   const lower = text.toLowerCase();
   const remoteJid = key.remoteJid;
   if (!remoteJid || remoteJid.endsWith('@g.us') || remoteJid.endsWith('@broadcast')) return false;
   const customerNumber = normalizeNumber(remoteJid);
-  const isStop = /^[.\/]?stop\b/.test(lower) && !/botanist|stopover/.test(lower);
-  const isStart = /^[.\/]?start\b/.test(lower) && !/starter|restart/.test(lower);
+  const isStop = /^[./]?stop\b/.test(lower) && !/botanist|stopover/.test(lower);
+  const isStart = /^[./]?start\b/.test(lower) && !/starter|restart/.test(lower);
   if (isStop) {
     const s = await getSettings();
     const set = numSet(s.pausedNumbers);
@@ -66,7 +95,7 @@ export async function handleInbound(sock, message, settings) {
   const key = message.key || {};
 
   if (key.fromMe) {
-    await handleFromMeCommand(sock, key, message.message, settings);
+    await handleFromMeCommand(sock, key, message.message);
     return;
   }
 
@@ -87,11 +116,13 @@ export async function handleInbound(sock, message, settings) {
   const hasMedia = !!(m.imageMessage || m.audioMessage || m.videoMessage || m.ptvMessage);
   if (!text && !hasMedia && !selectedId) return;
 
+  // Owner/admin gets full control; others get the natural assistant.
   if (isAdminNumber(senderNumber, settings)) {
     const reply = await handleAdmin(sock, remoteJid, senderNumber, m, settings);
     if (reply) await sock.sendMessage(remoteJid, { text: reply });
     return;
   }
+
   if (numSet(settings.blockedNumbers).has(senderNumber)) return;
   if (numSet(settings.pausedNumbers).has(senderNumber)) return;
   if (settings.botPaused) return;
@@ -100,10 +131,7 @@ export async function handleInbound(sock, message, settings) {
   if (!conversation) {
     conversation = {
       _id: senderNumber,
-      isNewUser: true,
-      profileNotes: {},
       messages: [],
-      escalatedToOwner: false,
       lastActive: new Date(),
       createdAt: new Date(),
     };
@@ -116,20 +144,13 @@ export async function handleInbound(sock, message, settings) {
   }
 
   const t = text.trim();
-
-  if (isPaused(conversation)) return;
-
   const customerText = t || (hasMedia ? '(media message)' : '');
-  await notifyWebhook(settings, { type: 'inbound', sender: senderNumber, name: pushName, text: customerText });
 
   let reply;
-  if (customerText && detectEscalation(customerText)) {
-    reply = await handleEscalation(sock, conversation, senderNumber, customerText, settings);
-  } else if (conversation.isNewUser) {
-    reply = await handleSales(conversation, customerText || 'hi', settings);
-    await col('conversations').updateOne({ _id: senderNumber }, { $set: { isNewUser: false } });
+  if (customerText && wantsHuman(customerText)) {
+    reply = await handleHumanHandoff(sock, conversation, senderNumber, customerText, settings);
   } else {
-    reply = await handleSales(conversation, customerText, settings);
+    reply = await chat(senderNumber, customerText, conversation, settings);
   }
 
   const now = new Date();
@@ -140,6 +161,18 @@ export async function handleInbound(sock, message, settings) {
   if (messages.length > 30) messages = messages.slice(-30);
   await col('conversations').updateOne({ _id: senderNumber }, { $set: { messages, lastActive: now } });
   await sock.sendMessage(remoteJid, { text: reply });
+}
+
+// Natural AI chat with per-user conversation history.
+async function chat(key, messageText, conversation, settings) {
+  const system = buildSystemPrompt();
+  const messages = [{ role: 'system', content: system }];
+  const history = (conversation?.messages || []).slice(-20);
+  for (const h of history) {
+    messages.push({ role: h.role === 'assistant' ? 'assistant' : 'user', content: h.content });
+  }
+  messages.push({ role: 'user', content: messageText });
+  return await getAIReply(messages, settings);
 }
 
 export default { handleInbound };

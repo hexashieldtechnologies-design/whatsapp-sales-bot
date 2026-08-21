@@ -19,7 +19,6 @@ export async function connectDB() {
   try {
     await db.collection('conversations').createIndex({ lastActive: -1 });
     await db.collection('whatsapp_sessions').createIndex({ key: 1 }, { unique: true });
-    await db.collection('broadcasts').createIndex({ createdAt: -1 });
   } catch (e) {
     logger.warn({ err: e.message }, 'index creation warning');
   }
@@ -64,23 +63,15 @@ export const MODEL_LISTS = {
 };
 
 export const DEFAULT_SETTINGS = {
-  businessName: 'Our Store',
-  shopAddress: '',
-  shopWebsite: '',
-  shopLocation: '',
-  productApiUrl: '',
-  productApiCreateUrl: '',
   aiProvider: process.env.AI_PROVIDER || 'openrouter',
   groqApiKey: '',
   groqModel: 'llama-3.3-70b-versatile',
-  groqVisionModel: 'llama-3.3-70b-versatile',
   openrouterApiKey: '',
   openrouterModel: 'google/gemma-4-26b-a4b-it:free',
   geminiApiKey: '',
   geminiModel: 'gemini-2.0-flash',
   ownerWhatsappNumber: '',
   adminNumbers: '',
-  broadcastWindowDays: 45,
   ownerTraining: '',
   blockedNumbers: '',
   pausedNumbers: '',

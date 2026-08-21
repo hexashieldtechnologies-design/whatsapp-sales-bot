@@ -8,7 +8,7 @@ export function makeHealthRouter(getStatus) {
     const status = getStatus ? getStatus() : { connected: false };
     res.json({
       ok: true,
-      service: 'whatsapp-sales-bot',
+      service: 'whatsapp-assistant',
       whatsapp: status.connected ? 'connected' : 'disconnected',
       phone: status.me || null,
       uptime: Math.round(process.uptime()),
