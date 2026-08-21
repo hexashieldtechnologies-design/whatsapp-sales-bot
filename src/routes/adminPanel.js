@@ -2,18 +2,16 @@
 // pairing, plus settings. QR auto-refreshes via client-side polling (no page
 // reload). AI Provider section uses an Add-button flow with a providers list.
 import express from 'express';
-import qrcode from 'qrcode';
 import { getSettings, saveSettings, MODEL_LISTS } from '../db.js';
 
 const router = express.Router();
 
 const COOKIE_NAME = 'wa_admin';
 const FIELD_NAMES = [
-  'businessName', 'shopAddress', 'shopWebsite', 'shopLocation',
-  'productApiUrl', 'productApiCreateUrl', 'aiProvider',
-  'groqApiKey', 'groqModel', 'groqVisionModel',
+  'aiProvider',
+  'groqApiKey', 'groqModel',
   'openrouterApiKey', 'openrouterModel', 'geminiApiKey', 'geminiModel',
-  'ownerWhatsappNumber', 'adminNumbers', 'broadcastWindowDays', 'ownerTraining',
+  'ownerWhatsappNumber', 'adminNumbers', 'ownerTraining',
   'blockedNumbers', 'notifyWebhookUrl',
 ];
 
@@ -136,25 +134,17 @@ ${isActive ? '' : `<button type="button" class="use" data-activate="${p.key}">Us
   }
 
   return baseHtml(`
-<h1>🤖 WhatsApp Sales Bot</h1>
+<h1>🤖 WhatsApp Assistant Bot</h1>
 <p class="sub">QR ya phone number se connect karo (upar) + settings (neeche).</p>
 ${qrSection}
 <form method="POST" action="/" id="settingsForm">
 <input type="hidden" name="aiProvider" id="aiProviderHidden" value="${esc(activeProvider)}">
-<div class="card"><h2>🏪 Business</h2>
-<label>Shop / business name</label><input name="businessName" value="${value('businessName')}">
-<label>Shop address</label><input name="shopAddress" value="${value('shopAddress')}" placeholder="Full address">
-<label>Shop location / area</label><input name="shopLocation" value="${value('shopLocation')}" placeholder="e.g. Andheri, Mumbai">
-<label>Website URL (agar hai)</label><input name="shopWebsite" value="${value('shopWebsite')}" placeholder="https://yourshop.com">
-<label>Owner WhatsApp number (escalation + admin)</label><input name="ownerWhatsappNumber" value="${value('ownerWhatsappNumber')}" placeholder="91XXXXXXXXXX">
+<div class="card"><h2>👤 Owner / Admin</h2>
+<label>Owner WhatsApp number (human handoff + admin)</label><input name="ownerWhatsappNumber" value="${value('ownerWhatsappNumber')}" placeholder="91XXXXXXXXXX">
 <label>Admin numbers (comma-separated)</label><input name="adminNumbers" value="${value('adminNumbers')}" placeholder="91XXXXXXXXXX,91YYYYYYYYYY">
 </div>
 <div class="card"><h2>🚫 Number Restriction (Blocklist)</h2>
 <label>Blocked numbers (comma-separated)</label><input name="blockedNumbers" value="${value('blockedNumbers')}" placeholder="91XXXXXXXXXX,91YYYYYYYYYY">
-</div>
-<div class="card"><h2>📦 Product catalog</h2>
-<label>Product API URL (GET → JSON array)</label><input name="productApiUrl" value="${value('productApiUrl')}" placeholder="https://yourapi.com/products">
-<label>Product API create URL (optional)</label><input name="productApiCreateUrl" value="${value('productApiCreateUrl')}" placeholder="leave blank to store in DB">
 </div>
 <div class="card"><h2>🤖 AI Provider</h2>
 <div id="providerList">${provRows || '<p style="color:#6b7280;">Koi provider add nahi hai.</p>'}</div>
@@ -192,9 +182,6 @@ ${qrSection}
 <div class="card"><h2>🎓 Owner Training (optional)</h2>
 <label>Apne bot ko kya sikhana hai?</label>
 <textarea name="ownerTraining" placeholder="Bot ko ye batao ki kaise baat karni hai...">${value('ownerTraining')}</textarea>
-</div>
-<div class="card"><h2>📣 Broadcast</h2>
-<label>Broadcast window (days)</label><input name="broadcastWindowDays" type="number" value="${value('broadcastWindowDays')}">
 </div>
 <button type="submit">Save settings</button>
 </form>
@@ -342,10 +329,6 @@ export function makeAdminPanelRouter(getQrState) {
     if (!isAuthed(req)) return res.redirect('/');
     const patch = {};
     for (const k of FIELD_NAMES) if (req.body[k] !== undefined) patch[k] = String(req.body[k]).trim();
-    if (patch.broadcastWindowDays !== undefined) {
-      const n = parseInt(patch.broadcastWindowDays, 10);
-      patch.broadcastWindowDays = Number.isFinite(n) && n > 0 ? n : 45;
-    }
     const settings = await saveSettings(patch);
     const qrState = getQrState ? getQrState() : {};
     res.send(await panelPage(settings, qrState, true));
@@ -385,7 +368,6 @@ export function makeAdminPanelRouter(getQrState) {
       if (provider === 'groq') {
         patch.groqApiKey = apiKey;
         if (model) patch.groqModel = model;
-        if (model) patch.groqVisionModel = model;
       } else if (provider === 'gemini') {
         patch.geminiApiKey = apiKey;
         if (model) patch.geminiModel = model;

@@ -36,7 +36,7 @@ async function startSock(settings) {
   sock = makeWASocket({
     auth: state,
     logger,
-    browser: ['WhatsApp Sales Bot', 'Chrome', '1.0.0'],
+    browser: ['WhatsApp Assistant', 'Chrome', '1.0.0'],
     printQRInTerminal: true,
   });
 
